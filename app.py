@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime
 from flask import Flask, request, redirect, url_for, render_template_string, jsonify, make_response
 
-APP_TITLE = "Corretor de Verbos (por regras da turma)"
+APP_TITLE = "CONJUGA CIEBTEC"
 
 # =========================================================
 # Render Free: use /tmp (gravável). Pode resetar em reinícios.
@@ -146,10 +146,51 @@ HOME_HTML = """
     .changes li { margin: 6px 0; }
     a { text-decoration: none; }
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
+  .header { margin: 14px 0 18px; }
+
+.logos {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.logos img {
+  max-height: 60px;
+  max-width: 220px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.credit {
+  margin: 0;
+  color: #444;
+  background: #f7f7f7;
+  border: 1px solid #e6e6e6;
+  padding: 10px 12px;
+  border-radius: 10px;
+  line-height: 1.4;
+}
+
   </style>
 </head>
 <body>
   <h1>{{title}}</h1>
+<div class="header">
+  <div class="logos">
+<img src="{{url_for('static', filename='logo_dchtxxi.jpg')}}" alt="Logo DCHT XXI">
+<img src="{{url_for('static', filename='logo_ciebtec.jpg')}}" alt="Logo CIEBTEC">
+<img src="{{url_for('static', filename='logo_pibid.jpg')}}" alt="Logo PIBID">
+
+  </div>
+
+  <p class="credit">
+    Este site foi desenvolvido pelo discente do DCHT XXI, Tauan Borges, em parceria com o PIBID e o CIEBTEC,
+    com o intuito de fomentar a educação científica, a cultura digital e a escrita adequada.
+  </p>
+</div>
 
   <p class="muted">
     Digite uma frase e a ferramenta tentará corrigir com base nas regras cadastradas pela turma.
@@ -211,10 +252,51 @@ ADMIN_HTML = """
     summary { cursor: pointer; font-weight: bold; }
     .btn-row { display:flex; gap: 10px; flex-wrap: wrap; }
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
+ .header { margin: 14px 0 18px; }
+
+.logos {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.logos img {
+  max-height: 60px;
+  max-width: 220px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.credit {
+  margin: 0;
+  color: #444;
+  background: #f7f7f7;
+  border: 1px solid #e6e6e6;
+  padding: 10px 12px;
+  border-radius: 10px;
+  line-height: 1.4;
+}
+
   </style>
 </head>
 <body>
   <h1>Painel de Regras</h1>
+<div class="header">
+  <div class="logos">
+ <img src="{{url_for('static', filename='logo_dchtxxi.jpg')}}" alt="Logo DCHT XXI">
+<img src="{{url_for('static', filename='logo_ciebtec.jpg')}}" alt="Logo CIEBTEC">
+<img src="{{url_for('static', filename='logo_pibid.jpg')}}" alt="Logo PIBID">
+
+  </div>
+
+  <p class="credit">
+    Este site foi desenvolvido pelo discente do DCHT XXI, Tauan Borges, em parceria com o PIBID e o CIEBTEC,
+    com o intuito de fomentar a educação científica, a cultura digital e a escrita adequada.
+  </p>
+</div>
 
   <p class="muted">
     Cadastre pares <b>errado → correto</b>. A ferramenta aplica todas as regras que encontrar.
