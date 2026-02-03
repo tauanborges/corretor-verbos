@@ -7,6 +7,7 @@ APP_TITLE = "Corretor de Verbos (por regras da turma)"
 DB_PATH = "regras.sqlite"
 
 app = Flask(__name__)
+db_init()
 
 # ----------------------------
 # Banco de dados (SQLite)
@@ -300,3 +301,4 @@ if __name__ == "__main__":
     # host=0.0.0.0 permite acessar de outros PCs na mesma rede (opcional).
     # Para começar, deixe padrão e use no próprio computador.
     app.run()
+
