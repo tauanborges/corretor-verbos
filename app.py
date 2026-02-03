@@ -1,17 +1,18 @@
+import os
 import re
+import json
 import sqlite3
 from datetime import datetime
-from flask import Flask, request, redirect, url_for, render_template_string, jsonify
+from flask import Flask, request, redirect, url_for, render_template_string, jsonify, make_response
 
 APP_TITLE = "Corretor de Verbos (por regras da turma)"
-import os
 
-DB_PATH = os.environ.get("DB_PATH", "/var/data/regras.sqlite")
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-
+# =========================================================
+# Render Free: use /tmp (gravável). Pode resetar em reinícios.
+# =========================================================
+DB_PATH = os.environ.get("DB_PATH", "/tmp/regras.sqlite")
 
 app = Flask(__name__)
-db_init()
 
 # ----------------------------
 # Banco de dados (SQLite)
@@ -36,6 +37,9 @@ def db_init():
     conn.commit()
     conn.close()
 
+# Inicializa o banco ao carregar (essencial no Render/Gunicorn)
+db_init()
+
 def get_rules():
     conn = db_connect()
     cur = conn.cursor()
@@ -43,7 +47,6 @@ def get_rules():
         cur.execute("SELECT * FROM rules ORDER BY LENGTH(wrong) DESC, id DESC;")
         rows = cur.fetchall()
     except sqlite3.OperationalError as e:
-        # Se a tabela não existe, cria e retorna vazio
         if "no such table" in str(e).lower():
             db_init()
             rows = []
@@ -53,13 +56,13 @@ def get_rules():
         conn.close()
     return rows
 
-
 def add_rule(wrong: str, right: str, notes: str = ""):
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO rules (wrong, right, notes, created_at) VALUES (?, ?, ?, ?)",
-        (wrong.strip(), right.strip(), (notes or "").strip(), datetime.now().isoformat(timespec="seconds"))
+        (wrong.strip(), right.strip(), (notes or "").strip(),
+         datetime.now().isoformat(timespec="seconds"))
     )
     conn.commit()
     conn.close()
@@ -71,12 +74,19 @@ def delete_rule(rule_id: int):
     conn.commit()
     conn.close()
 
+def clear_rules():
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM rules;")
+    conn.commit()
+    conn.close()
+
 # ----------------------------
 # Correção: múltiplos erros
 # ----------------------------
 def apply_case_like(source_text: str, replacement: str) -> str:
     """
-    Tenta preservar caixa:
+    Preserva caixa:
     - tudo maiúsculo -> tudo maiúsculo
     - Capitalizado -> capitalizado
     - resto -> como está
@@ -90,14 +100,12 @@ def apply_case_like(source_text: str, replacement: str) -> str:
 def correct_text(text: str):
     """
     Aplica TODAS as regras encontradas na frase (múltiplos erros).
-    Retorna texto corrigido + lista de alterações (para mostrar ao aluno).
+    Retorna texto corrigido + lista de alterações.
     """
     rules = get_rules()
     corrected = text
     changes = []
 
-    # Para cada regra, substitui com borda de palavra quando possível.
-    # Se a regra tiver espaços, ainda tentamos achar como "frase" (com limites menos rígidos).
     for r in rules:
         wrong = r["wrong"]
         right = r["right"]
@@ -105,13 +113,9 @@ def correct_text(text: str):
         if not wrong:
             continue
 
-        # Se tiver letras/números, usamos um padrão com "limite" mais seguro.
-        # - Para 1 palavra: \b...\b
-        # - Para várias palavras: tenta respeitar espaços e pontuação ao redor
         if " " not in wrong.strip():
             pattern = re.compile(rf"\b{re.escape(wrong)}\b", re.IGNORECASE)
         else:
-            # Multi-palavra: aceita início/fim ou pontuação ao redor
             pattern = re.compile(rf"(?<!\w){re.escape(wrong)}(?!\w)", re.IGNORECASE)
 
         def _repl(match):
@@ -120,8 +124,7 @@ def correct_text(text: str):
             changes.append({"de": original, "para": repl})
             return repl
 
-        corrected_new, n = pattern.subn(_repl, corrected)
-        corrected = corrected_new
+        corrected, _ = pattern.subn(_repl, corrected)
 
     return corrected, changes
 
@@ -142,14 +145,20 @@ HOME_HTML = """
     .muted { color: #666; }
     .changes li { margin: 6px 0; }
     a { text-decoration: none; }
+    .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
   </style>
 </head>
 <body>
   <h1>{{title}}</h1>
+
   <p class="muted">
     Digite uma frase e a ferramenta tentará corrigir com base nas regras cadastradas pela turma.
     <br>
     <a href="{{url_for('admin')}}">Ir para o painel de regras (/admin)</a>
+  </p>
+
+  <p class="muted">
+    <span class="pill">Banco: {{db_path}}</span>
   </p>
 
   <form method="post" action="{{url_for('home')}}">
@@ -187,7 +196,7 @@ ADMIN_HTML = """
   <meta charset="utf-8">
   <title>Painel de Regras - {{title}}</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 1000px; margin: 30px auto; padding: 0 16px; }
+    body { font-family: Arial, sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 16px; }
     input, textarea { width: 100%; padding: 10px; font-size: 15px; }
     button { padding: 10px 14px; font-size: 15px; cursor: pointer; }
     table { width: 100%; border-collapse: collapse; margin-top: 18px; }
@@ -195,16 +204,27 @@ ADMIN_HTML = """
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .muted { color: #666; }
     .danger { background: #ffecec; border: 1px solid #ffbcbc; padding: 10px; border-radius: 8px; }
+    .info { background: #eef6ff; border: 1px solid #b9dcff; padding: 10px; border-radius: 8px; }
     a { text-decoration: none; }
     code { background: #f4f4f4; padding: 2px 6px; border-radius: 6px; }
+    details { margin-top: 16px; }
+    summary { cursor: pointer; font-weight: bold; }
+    .btn-row { display:flex; gap: 10px; flex-wrap: wrap; }
+    .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
   </style>
 </head>
 <body>
   <h1>Painel de Regras</h1>
+
   <p class="muted">
     Cadastre pares <b>errado → correto</b>. A ferramenta aplica todas as regras que encontrar.
     <br>
     <a href="{{url_for('home')}}">← Voltar para a ferramenta</a>
+  </p>
+
+  <p class="muted">
+    <span class="pill">Banco: {{db_path}}</span>
+    <span class="pill">Total de regras: {{rules|length}}</span>
   </p>
 
   <div class="danger">
@@ -231,7 +251,47 @@ ADMIN_HTML = """
     <button type="submit">Salvar regra</button>
   </form>
 
-  <h2>Regras cadastradas ({{rules|length}})</h2>
+  <details>
+    <summary>Backup/Restaurar (Importar/Exportar)</summary>
+    <div class="info">
+      <p class="muted">
+        No plano gratuito, as regras podem sumir se o serviço reiniciar.
+        Use o <b>Exportar</b> para salvar um backup e o <b>Importar</b> para restaurar.
+      </p>
+
+      <div class="btn-row">
+        <form method="get" action="{{url_for('admin_export_download')}}">
+          <button type="submit">Exportar regras (baixar arquivo .json)</button>
+        </form>
+
+        <form method="post" action="{{url_for('admin_clear')}}" onsubmit="return confirm('Tem certeza que deseja APAGAR TODAS as regras?');">
+          <button type="submit">Apagar todas as regras</button>
+        </form>
+      </div>
+
+      <h3>Importar regras</h3>
+      <p class="muted">
+        Abra o arquivo JSON do backup, copie tudo e cole abaixo. Depois clique em <b>Importar</b>.
+      </p>
+
+      <form method="post" action="{{url_for('admin_import')}}">
+        <textarea name="json_payload" placeholder='Cole aqui o JSON do backup (começa com {"exported_at": ... })' style="min-height: 170px;"></textarea>
+        <br><br>
+        <label>
+          <input type="checkbox" name="replace_all" value="1">
+          Substituir tudo (apagar regras atuais antes de importar)
+        </label>
+        <br><br>
+        <button type="submit">Importar</button>
+      </form>
+
+      {% if import_msg %}
+        <p><b>{{import_msg}}</b></p>
+      {% endif %}
+    </div>
+  </details>
+
+  <h2>Regras cadastradas</h2>
   <table>
     <thead>
       <tr>
@@ -278,12 +338,26 @@ def home():
         text = request.form.get("text", "")
         result, changes = correct_text(text)
 
-    return render_template_string(HOME_HTML, title=APP_TITLE, text=text, result=result, changes=changes)
+    return render_template_string(
+        HOME_HTML,
+        title=APP_TITLE,
+        text=text,
+        result=result,
+        changes=changes,
+        db_path=DB_PATH
+    )
 
 @app.route("/admin", methods=["GET"])
 def admin():
     rules = get_rules()
-    return render_template_string(ADMIN_HTML, title=APP_TITLE, rules=rules)
+    import_msg = request.args.get("msg", "")
+    return render_template_string(
+        ADMIN_HTML,
+        title=APP_TITLE,
+        rules=rules,
+        db_path=DB_PATH,
+        import_msg=import_msg
+    )
 
 @app.route("/admin/add", methods=["POST"])
 def admin_add():
@@ -301,7 +375,68 @@ def admin_delete(rule_id):
     delete_rule(rule_id)
     return redirect(url_for("admin"))
 
-# API simples (caso um aluno do 1º de informática queira integrar com outra interface)
+# ----------------------------
+# Export / Import com interface
+# ----------------------------
+@app.route("/admin/export", methods=["GET"])
+def admin_export():
+    rules = get_rules()
+    data = [
+        {"wrong": r["wrong"], "right": r["right"], "notes": r["notes"] or "", "created_at": r["created_at"]}
+        for r in rules
+    ]
+    return jsonify({"exported_at": datetime.now().isoformat(timespec="seconds"), "rules": data})
+
+@app.route("/admin/export/download", methods=["GET"])
+def admin_export_download():
+    payload = admin_export().get_json()
+    filename = "regras-backup.json"
+    body = json.dumps(payload, ensure_ascii=False, indent=2)
+
+    resp = make_response(body)
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
+
+@app.route("/admin/import", methods=["POST"])
+def admin_import():
+    json_payload = request.form.get("json_payload", "").strip()
+    replace_all = request.form.get("replace_all") == "1"
+
+    if not json_payload:
+        return redirect(url_for("admin", msg="Nada importado: o campo está vazio."))
+
+    try:
+        payload = json.loads(json_payload)
+        rules = payload.get("rules", [])
+        if not isinstance(rules, list):
+            return redirect(url_for("admin", msg="Erro: o JSON não tem uma lista válida em 'rules'."))
+
+        if replace_all:
+            clear_rules()
+
+        count = 0
+        for item in rules:
+            if not isinstance(item, dict):
+                continue
+            wrong = (item.get("wrong") or "").strip()
+            right = (item.get("right") or "").strip()
+            notes = (item.get("notes") or "").strip()
+            if wrong and right:
+                add_rule(wrong, right, notes)
+                count += 1
+
+        return redirect(url_for("admin", msg=f"Importação concluída: {count} regra(s) adicionada(s)."))
+
+    except Exception as e:
+        return redirect(url_for("admin", msg=f"Erro ao importar JSON: {str(e)}"))
+
+@app.route("/admin/clear", methods=["POST"])
+def admin_clear():
+    clear_rules()
+    return redirect(url_for("admin", msg="Todas as regras foram apagadas."))
+
+# API simples (caso a turma de informática queira integrar com outra interface)
 @app.route("/api/correct", methods=["POST"])
 def api_correct():
     data = request.get_json(force=True, silent=True) or {}
@@ -310,10 +445,4 @@ def api_correct():
     return jsonify({"input": text, "corrected": corrected, "changes": changes})
 
 if __name__ == "__main__":
-    db_init()
-    # host=0.0.0.0 permite acessar de outros PCs na mesma rede (opcional).
-    # Para começar, deixe padrão e use no próprio computador.
     app.run()
-
-
-
