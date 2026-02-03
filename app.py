@@ -7,6 +7,7 @@ APP_TITLE = "Corretor de Verbos (por regras da turma)"
 DB_PATH = "regras.sqlite"
 
 app = Flask(__name__)
+
 db_init()
 
 # ----------------------------
@@ -35,11 +36,20 @@ def db_init():
 def get_rules():
     conn = db_connect()
     cur = conn.cursor()
-    # Ordena por tamanho do "wrong" (maiores primeiro) para evitar troca parcial atrapalhar outra
-    cur.execute("SELECT * FROM rules ORDER BY LENGTH(wrong) DESC, id DESC;")
-    rows = cur.fetchall()
-    conn.close()
+    try:
+        cur.execute("SELECT * FROM rules ORDER BY LENGTH(wrong) DESC, id DESC;")
+        rows = cur.fetchall()
+    except sqlite3.OperationalError as e:
+        # Se a tabela não existe, cria e retorna vazio
+        if "no such table" in str(e).lower():
+            db_init()
+            rows = []
+        else:
+            raise
+    finally:
+        conn.close()
     return rows
+
 
 def add_rule(wrong: str, right: str, notes: str = ""):
     conn = db_connect()
@@ -301,4 +311,5 @@ if __name__ == "__main__":
     # host=0.0.0.0 permite acessar de outros PCs na mesma rede (opcional).
     # Para começar, deixe padrão e use no próprio computador.
     app.run()
+
 
