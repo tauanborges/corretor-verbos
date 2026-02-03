@@ -4,10 +4,13 @@ from datetime import datetime
 from flask import Flask, request, redirect, url_for, render_template_string, jsonify
 
 APP_TITLE = "Corretor de Verbos (por regras da turma)"
-DB_PATH = "regras.sqlite"
+import os
+
+DB_PATH = os.environ.get("DB_PATH", "/var/data/regras.sqlite")
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
 
 app = Flask(__name__)
-
 db_init()
 
 # ----------------------------
@@ -311,5 +314,6 @@ if __name__ == "__main__":
     # host=0.0.0.0 permite acessar de outros PCs na mesma rede (opcional).
     # Para começar, deixe padrão e use no próprio computador.
     app.run()
+
 
 
