@@ -2,8 +2,12 @@ import os
 import re
 import json
 import sqlite3
+from functools import wraps
 from datetime import datetime
-from flask import Flask, request, redirect, url_for, render_template_string, jsonify, make_response
+from flask import (
+    Flask, request, redirect, url_for, render_template_string,
+    jsonify, make_response, session
+)
 
 APP_TITLE = "CONJUGA CIEBTEC"  # se quiser: "CONJUGANDO CIEBTEC"
 
@@ -13,6 +17,81 @@ APP_TITLE = "CONJUGA CIEBTEC"  # se quiser: "CONJUGANDO CIEBTEC"
 DB_PATH = os.environ.get("DB_PATH", "/tmp/regras.sqlite")
 
 app = Flask(__name__)
+# Sessões (login). No Render, configure SECRET_KEY nas Environment Variables.
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+
+# ----------------------------
+# Proteção do /admin por senha
+# ----------------------------
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        admin_pass = os.environ.get("ADMIN_PASSWORD", "")
+        if not admin_pass:
+            return "ADMIN_PASSWORD não configurada no Render.", 500
+
+        if session.get("is_admin") is True:
+            return fn(*args, **kwargs)
+
+        return redirect(url_for("login", next=request.path))
+    return wrapper
+
+LOGIN_HTML = """
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <title>Login - {{title}}</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 520px; margin: 60px auto; padding: 0 16px; }
+    input { width: 100%; padding: 10px; font-size: 16px; }
+    button { padding: 10px 14px; font-size: 16px; cursor: pointer; }
+    .box { border: 1px solid #ddd; border-radius: 10px; padding: 16px; }
+    .muted { color:#666; }
+    .err { color:#b00020; margin-top: 10px; }
+    a { text-decoration: none; }
+  </style>
+</head>
+<body>
+  <h1>Área restrita</h1>
+  <p class="muted">Entre com a senha para acessar o painel /admin.</p>
+
+  <div class="box">
+    <form method="post" action="{{url_for('login')}}">
+      <label><b>Senha do admin</b></label><br>
+      <input type="password" name="password" required autofocus>
+      <input type="hidden" name="next" value="{{next_url}}">
+      <br><br>
+      <button type="submit">Entrar</button>
+    </form>
+
+    {% if error %}
+      <div class="err"><b>{{error}}</b></div>
+    {% endif %}
+  </div>
+
+  <p class="muted"><a href="{{url_for('home')}}">← Voltar para a ferramenta</a></p>
+</body>
+</html>
+"""
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    next_url = request.values.get("next", "/admin")
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        admin_pass = os.environ.get("ADMIN_PASSWORD", "")
+        if admin_pass and password == admin_pass:
+            session["is_admin"] = True
+            return redirect(next_url or "/admin")
+        return render_template_string(LOGIN_HTML, title=APP_TITLE, error="Senha incorreta.", next_url=next_url)
+
+    return render_template_string(LOGIN_HTML, title=APP_TITLE, error="", next_url=next_url)
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("home"))
 
 # ----------------------------
 # Banco de dados (SQLite)
@@ -41,7 +120,6 @@ def db_init():
     try:
         cur.execute("ALTER TABLE rules ADD COLUMN contributor TEXT;")
     except sqlite3.OperationalError:
-        # Já existe (ou o banco foi criado com ela)
         pass
 
     conn.commit()
@@ -259,6 +337,7 @@ ADMIN_HTML = """
     summary { cursor: pointer; font-weight: bold; }
     .btn-row { display:flex; gap: 10px; flex-wrap: wrap; }
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
+    .box { border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin-top: 16px; }
 
     .header { margin: 14px 0 18px; }
     .logos { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
@@ -267,6 +346,7 @@ ADMIN_HTML = """
 
     .leaderboard { margin-top: 14px; }
     .leaderboard ol { margin: 8px 0 0 20px; }
+    .top-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 0; }
   </style>
 </head>
 <body>
@@ -283,6 +363,12 @@ ADMIN_HTML = """
       Este site foi desenvolvido pelo discente do DCHT XXI, Tauan Borges, em parceria com o PIBID e o CIEBTEC,
       com o intuito de fomentar a educação científica, a cultura digital e a escrita adequada.
     </p>
+
+    <div class="top-actions">
+      <form method="post" action="{{url_for('logout')}}">
+        <button type="submit">Sair do admin</button>
+      </form>
+    </div>
   </div>
 
   <p class="muted">
@@ -437,6 +523,7 @@ def home():
     )
 
 @app.route("/admin", methods=["GET"])
+@admin_required
 def admin():
     rules = get_rules()
     leaders = get_leaderboard(10)
@@ -451,6 +538,7 @@ def admin():
     )
 
 @app.route("/admin/add", methods=["POST"])
+@admin_required
 def admin_add():
     wrong = request.form.get("wrong", "").strip()
     right = request.form.get("right", "").strip()
@@ -463,6 +551,7 @@ def admin_add():
     return redirect(url_for("admin"))
 
 @app.route("/admin/delete/<int:rule_id>", methods=["POST"])
+@admin_required
 def admin_delete(rule_id):
     delete_rule(rule_id)
     return redirect(url_for("admin"))
@@ -471,6 +560,7 @@ def admin_delete(rule_id):
 # Export / Import com interface
 # ----------------------------
 @app.route("/admin/export", methods=["GET"])
+@admin_required
 def admin_export():
     rules = get_rules()
     data = [
@@ -486,6 +576,7 @@ def admin_export():
     return jsonify({"exported_at": datetime.now().isoformat(timespec="seconds"), "rules": data})
 
 @app.route("/admin/export/download", methods=["GET"])
+@admin_required
 def admin_export_download():
     payload = admin_export().get_json()
     filename = "regras-backup.json"
@@ -497,6 +588,7 @@ def admin_export_download():
     return resp
 
 @app.route("/admin/import", methods=["POST"])
+@admin_required
 def admin_import():
     json_payload = request.form.get("json_payload", "").strip()
     replace_all = request.form.get("replace_all") == "1"
@@ -531,6 +623,7 @@ def admin_import():
         return redirect(url_for("admin", msg=f"Erro ao importar JSON: {str(e)}"))
 
 @app.route("/admin/clear", methods=["POST"])
+@admin_required
 def admin_clear():
     clear_rules()
     return redirect(url_for("admin", msg="Todas as regras foram apagadas."))
