@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime
 from flask import Flask, request, redirect, url_for, render_template_string, jsonify, make_response
 
-APP_TITLE = "CONJUGA CIEBTEC"
+APP_TITLE = "CONJUGA CIEBTEC"  # se quiser: "CONJUGANDO CIEBTEC"
 
 # =========================================================
 # Render Free: use /tmp (gravável). Pode resetar em reinícios.
@@ -25,6 +25,8 @@ def db_connect():
 def db_init():
     conn = db_connect()
     cur = conn.cursor()
+
+    # Tabela base
     cur.execute("""
         CREATE TABLE IF NOT EXISTS rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,6 +36,14 @@ def db_init():
             created_at TEXT NOT NULL
         );
     """)
+
+    # Migração segura: adiciona coluna contributor se ainda não existir
+    try:
+        cur.execute("ALTER TABLE rules ADD COLUMN contributor TEXT;")
+    except sqlite3.OperationalError:
+        # Já existe (ou o banco foi criado com ela)
+        pass
+
     conn.commit()
     conn.close()
 
@@ -56,13 +66,18 @@ def get_rules():
         conn.close()
     return rows
 
-def add_rule(wrong: str, right: str, notes: str = ""):
+def add_rule(wrong: str, right: str, notes: str = "", contributor: str = ""):
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO rules (wrong, right, notes, created_at) VALUES (?, ?, ?, ?)",
-        (wrong.strip(), right.strip(), (notes or "").strip(),
-         datetime.now().isoformat(timespec="seconds"))
+        "INSERT INTO rules (wrong, right, notes, created_at, contributor) VALUES (?, ?, ?, ?, ?)",
+        (
+            wrong.strip(),
+            right.strip(),
+            (notes or "").strip(),
+            datetime.now().isoformat(timespec="seconds"),
+            (contributor or "").strip()
+        )
     )
     conn.commit()
     conn.close()
@@ -80,6 +95,21 @@ def clear_rules():
     cur.execute("DELETE FROM rules;")
     conn.commit()
     conn.close()
+
+def get_leaderboard(limit: int = 10):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT contributor, COUNT(*) as total
+        FROM rules
+        WHERE contributor IS NOT NULL AND TRIM(contributor) <> ''
+        GROUP BY contributor
+        ORDER BY total DESC, contributor ASC
+        LIMIT ?;
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 # ----------------------------
 # Correção: múltiplos erros
@@ -129,7 +159,7 @@ def correct_text(text: str):
     return corrected, changes
 
 # ----------------------------
-# Templates (HTML) simples
+# Templates (HTML)
 # ----------------------------
 HOME_HTML = """
 <!doctype html>
@@ -146,51 +176,28 @@ HOME_HTML = """
     .changes li { margin: 6px 0; }
     a { text-decoration: none; }
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
-  .header { margin: 14px 0 18px; }
 
-.logos {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 10px;
-}
-
-.logos img {
-  max-height: 60px;
-  max-width: 220px;
-  width: auto;
-  height: auto;
-  object-fit: contain;
-}
-
-.credit {
-  margin: 0;
-  color: #444;
-  background: #f7f7f7;
-  border: 1px solid #e6e6e6;
-  padding: 10px 12px;
-  border-radius: 10px;
-  line-height: 1.4;
-}
-
+    .header { margin: 14px 0 18px; }
+    .logos { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .logos img { max-height: 60px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
+    .credit { margin: 0; color: #444; background: #f7f7f7; border: 1px solid #e6e6e6; padding: 10px 12px; border-radius: 10px; line-height: 1.4; }
   </style>
 </head>
 <body>
   <h1>{{title}}</h1>
-<div class="header">
-  <div class="logos">
-<img src="{{url_for('static', filename='logo_dchtxxi.jpg')}}" alt="Logo DCHT XXI">
-<img src="{{url_for('static', filename='logo_ciebtec.jpg')}}" alt="Logo CIEBTEC">
-<img src="{{url_for('static', filename='logo_pibid.jpg')}}" alt="Logo PIBID">
 
+  <div class="header">
+    <div class="logos">
+      <img src="{{url_for('static', filename='logo_dchtxxi.jpg')}}" alt="Logo DCHT XXI">
+      <img src="{{url_for('static', filename='logo_ciebtec.jpg')}}" alt="Logo CIEBTEC">
+      <img src="{{url_for('static', filename='logo_pibid.jpg')}}" alt="Logo PIBID">
+    </div>
+
+    <p class="credit">
+      Este site foi desenvolvido pelo discente do DCHT XXI, Tauan Borges, em parceria com o PIBID e o CIEBTEC,
+      com o intuito de fomentar a educação científica, a cultura digital e a escrita adequada.
+    </p>
   </div>
-
-  <p class="credit">
-    Este site foi desenvolvido pelo discente do DCHT XXI, Tauan Borges, em parceria com o PIBID e o CIEBTEC,
-    com o intuito de fomentar a educação científica, a cultura digital e a escrita adequada.
-  </p>
-</div>
 
   <p class="muted">
     Digite uma frase e a ferramenta tentará corrigir com base nas regras cadastradas pela turma.
@@ -252,51 +259,31 @@ ADMIN_HTML = """
     summary { cursor: pointer; font-weight: bold; }
     .btn-row { display:flex; gap: 10px; flex-wrap: wrap; }
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
- .header { margin: 14px 0 18px; }
 
-.logos {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 10px;
-}
+    .header { margin: 14px 0 18px; }
+    .logos { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .logos img { max-height: 60px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
+    .credit { margin: 0; color: #444; background: #f7f7f7; border: 1px solid #e6e6e6; padding: 10px 12px; border-radius: 10px; line-height: 1.4; }
 
-.logos img {
-  max-height: 60px;
-  max-width: 220px;
-  width: auto;
-  height: auto;
-  object-fit: contain;
-}
-
-.credit {
-  margin: 0;
-  color: #444;
-  background: #f7f7f7;
-  border: 1px solid #e6e6e6;
-  padding: 10px 12px;
-  border-radius: 10px;
-  line-height: 1.4;
-}
-
+    .leaderboard { margin-top: 14px; }
+    .leaderboard ol { margin: 8px 0 0 20px; }
   </style>
 </head>
 <body>
   <h1>Painel de Regras</h1>
-<div class="header">
-  <div class="logos">
- <img src="{{url_for('static', filename='logo_dchtxxi.jpg')}}" alt="Logo DCHT XXI">
-<img src="{{url_for('static', filename='logo_ciebtec.jpg')}}" alt="Logo CIEBTEC">
-<img src="{{url_for('static', filename='logo_pibid.jpg')}}" alt="Logo PIBID">
 
+  <div class="header">
+    <div class="logos">
+      <img src="{{url_for('static', filename='logo_dchtxxi.jpg')}}" alt="Logo DCHT XXI">
+      <img src="{{url_for('static', filename='logo_ciebtec.jpg')}}" alt="Logo CIEBTEC">
+      <img src="{{url_for('static', filename='logo_pibid.jpg')}}" alt="Logo PIBID">
+    </div>
+
+    <p class="credit">
+      Este site foi desenvolvido pelo discente do DCHT XXI, Tauan Borges, em parceria com o PIBID e o CIEBTEC,
+      com o intuito de fomentar a educação científica, a cultura digital e a escrita adequada.
+    </p>
   </div>
-
-  <p class="credit">
-    Este site foi desenvolvido pelo discente do DCHT XXI, Tauan Borges, em parceria com o PIBID e o CIEBTEC,
-    com o intuito de fomentar a educação científica, a cultura digital e a escrita adequada.
-  </p>
-</div>
 
   <p class="muted">
     Cadastre pares <b>errado → correto</b>. A ferramenta aplica todas as regras que encontrar.
@@ -308,6 +295,19 @@ ADMIN_HTML = """
     <span class="pill">Banco: {{db_path}}</span>
     <span class="pill">Total de regras: {{rules|length}}</span>
   </p>
+
+  <div class="leaderboard box">
+    <h2>Painel de líderes</h2>
+    {% if leaders and leaders|length > 0 %}
+      <ol>
+        {% for l in leaders %}
+          <li><b>{{l.contributor}}</b> — {{l.total}} contribuição(ões)</li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      <p class="muted">Ainda não há contribuições registradas.</p>
+    {% endif %}
+  </div>
 
   <div class="danger">
     <b>Dica didática:</b> vocês podem criar “missões” para os alunos alimentarem o sistema:
@@ -326,7 +326,12 @@ ADMIN_HTML = """
         <input name="right" placeholder="Ex.: nós vamos" required>
       </div>
     </div>
+
     <br>
+    <label><b>Username do aluno (para o painel de líderes)</b></label>
+    <input name="contributor" placeholder="Ex.: ana_1info" required>
+
+    <br><br>
     <label><b>Observação (opcional)</b> — use para explicar o porquê (tempo verbal, concordância etc.)</label>
     <textarea name="notes" placeholder="Ex.: 1ª pessoa do plural no presente do indicativo"></textarea>
     <br><br>
@@ -379,6 +384,7 @@ ADMIN_HTML = """
       <tr>
         <th>Errado</th>
         <th>Correto</th>
+        <th>Username</th>
         <th>Observação</th>
         <th>Criada em</th>
         <th>Ação</th>
@@ -389,6 +395,7 @@ ADMIN_HTML = """
         <tr>
           <td><code>{{r.wrong}}</code></td>
           <td><code>{{r.right}}</code></td>
+          <td class="muted">{{r.contributor or ""}}</td>
           <td class="muted">{{r.notes or ""}}</td>
           <td class="muted">{{r.created_at}}</td>
           <td>
@@ -399,7 +406,7 @@ ADMIN_HTML = """
         </tr>
       {% endfor %}
       {% if not rules %}
-        <tr><td colspan="5" class="muted">Nenhuma regra ainda. Cadastre as primeiras acima.</td></tr>
+        <tr><td colspan="6" class="muted">Nenhuma regra ainda. Cadastre as primeiras acima.</td></tr>
       {% endif %}
     </tbody>
   </table>
@@ -432,11 +439,13 @@ def home():
 @app.route("/admin", methods=["GET"])
 def admin():
     rules = get_rules()
+    leaders = get_leaderboard(10)
     import_msg = request.args.get("msg", "")
     return render_template_string(
         ADMIN_HTML,
         title=APP_TITLE,
         rules=rules,
+        leaders=leaders,
         db_path=DB_PATH,
         import_msg=import_msg
     )
@@ -446,9 +455,10 @@ def admin_add():
     wrong = request.form.get("wrong", "").strip()
     right = request.form.get("right", "").strip()
     notes = request.form.get("notes", "").strip()
+    contributor = request.form.get("contributor", "").strip()
 
     if wrong and right:
-        add_rule(wrong, right, notes)
+        add_rule(wrong, right, notes, contributor)
 
     return redirect(url_for("admin"))
 
@@ -464,7 +474,13 @@ def admin_delete(rule_id):
 def admin_export():
     rules = get_rules()
     data = [
-        {"wrong": r["wrong"], "right": r["right"], "notes": r["notes"] or "", "created_at": r["created_at"]}
+        {
+            "wrong": r["wrong"],
+            "right": r["right"],
+            "notes": r["notes"] or "",
+            "contributor": (r["contributor"] or "") if "contributor" in r.keys() else "",
+            "created_at": r["created_at"]
+        }
         for r in rules
     ]
     return jsonify({"exported_at": datetime.now().isoformat(timespec="seconds"), "rules": data})
@@ -504,8 +520,9 @@ def admin_import():
             wrong = (item.get("wrong") or "").strip()
             right = (item.get("right") or "").strip()
             notes = (item.get("notes") or "").strip()
+            contributor = (item.get("contributor") or "").strip()
             if wrong and right:
-                add_rule(wrong, right, notes)
+                add_rule(wrong, right, notes, contributor)
                 count += 1
 
         return redirect(url_for("admin", msg=f"Importação concluída: {count} regra(s) adicionada(s)."))
