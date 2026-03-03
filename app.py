@@ -2,11 +2,17 @@ import os
 import re
 import json
 import sqlite3
-from functools import wraps
 from datetime import datetime
+from functools import wraps
 from flask import (
-    Flask, request, redirect, url_for, render_template_string,
-    jsonify, make_response, session
+    Flask,
+    request,
+    redirect,
+    url_for,
+    render_template_string,
+    jsonify,
+    make_response,
+    session,
 )
 
 APP_TITLE = "CONJUGA CIEBTEC"  # se quiser: "CONJUGANDO CIEBTEC"
@@ -16,12 +22,18 @@ APP_TITLE = "CONJUGA CIEBTEC"  # se quiser: "CONJUGANDO CIEBTEC"
 # =========================================================
 DB_PATH = os.environ.get("DB_PATH", "/tmp/regras.sqlite")
 
+# Status internos
+STATUS_PENDING = "PENDING"
+STATUS_APPROVED_RANK = "APPROVED_RANK"
+STATUS_APPROVED_NO_RANK = "APPROVED_NO_RANK"
+STATUS_NOT_APPROVED = "NOT_APPROVED"
+
+
 app = Flask(__name__)
-# Sessões (login). No Render, configure SECRET_KEY nas Environment Variables.
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 
 # ----------------------------
-# Proteção do /admin por senha
+# Autenticação simples do /admin (senha via env var)
 # ----------------------------
 def admin_required(fn):
     @wraps(fn)
@@ -29,12 +41,11 @@ def admin_required(fn):
         admin_pass = os.environ.get("ADMIN_PASSWORD", "")
         if not admin_pass:
             return "ADMIN_PASSWORD não configurada no Render.", 500
-
         if session.get("is_admin") is True:
             return fn(*args, **kwargs)
-
         return redirect(url_for("login", next=request.path))
     return wrapper
+
 
 LOGIN_HTML = """
 <!doctype html>
@@ -75,6 +86,7 @@ LOGIN_HTML = """
 </html>
 """
 
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     next_url = request.values.get("next", "/admin")
@@ -85,13 +97,14 @@ def login():
             session["is_admin"] = True
             return redirect(next_url or "/admin")
         return render_template_string(LOGIN_HTML, title=APP_TITLE, error="Senha incorreta.", next_url=next_url)
-
     return render_template_string(LOGIN_HTML, title=APP_TITLE, error="", next_url=next_url)
+
 
 @app.route("/logout", methods=["POST"])
 def logout():
     session.clear()
     return redirect(url_for("home"))
+
 
 # ----------------------------
 # Banco de dados (SQLite)
@@ -101,11 +114,12 @@ def db_connect():
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def db_init():
     conn = db_connect()
     cur = conn.cursor()
 
-    # Tabela base
+    # Base
     cur.execute("""
         CREATE TABLE IF NOT EXISTS rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,49 +130,116 @@ def db_init():
         );
     """)
 
-    # Migração segura: adiciona coluna contributor se ainda não existir
-    try:
-        cur.execute("ALTER TABLE rules ADD COLUMN contributor TEXT;")
-    except sqlite3.OperationalError:
-        pass
+    # Migrações seguras
+    for stmt in [
+        "ALTER TABLE rules ADD COLUMN contributor TEXT;",
+        "ALTER TABLE rules ADD COLUMN status TEXT;",
+        "ALTER TABLE rules ADD COLUMN reviewed_at TEXT;",
+    ]:
+        try:
+            cur.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
+
+    # Para regras antigas sem status: mantém correção funcionando e evita “inflar” ranking.
+    # (Vão aparecer como "Aprovada (não pontua)" por padrão.)
+    cur.execute("""
+        UPDATE rules
+        SET status = ?
+        WHERE status IS NULL OR TRIM(status) = '';
+    """, (STATUS_APPROVED_NO_RANK,))
 
     conn.commit()
     conn.close()
 
-# Inicializa o banco ao carregar (essencial no Render/Gunicorn)
+
 db_init()
 
-def get_rules():
+
+def get_pending_count() -> int:
     conn = db_connect()
     cur = conn.cursor()
-    try:
-        cur.execute("SELECT * FROM rules ORDER BY LENGTH(wrong) DESC, id DESC;")
-        rows = cur.fetchall()
-    except sqlite3.OperationalError as e:
-        if "no such table" in str(e).lower():
-            db_init()
-            rows = []
-        else:
-            raise
-    finally:
-        conn.close()
+    cur.execute("SELECT COUNT(*) FROM rules WHERE status = ?;", (STATUS_PENDING,))
+    n = int(cur.fetchone()[0])
+    conn.close()
+    return n
+
+
+def get_rules_list(view: str = "default"):
+    """
+    view:
+      - default: mostra só aprovadas (pontua e não pontua)
+      - all: tudo (inclui pendentes e não aprovadas)
+      - pending: só pendentes
+      - approved_rank: só aprovadas que pontuam
+      - approved_no_rank: só aprovadas que não pontuam
+      - not_approved: só não aprovadas (ocultas no default)
+    """
+    conn = db_connect()
+    cur = conn.cursor()
+
+    where = []
+    params = []
+
+    if view == "all":
+        pass
+    elif view == "pending":
+        where.append("status = ?")
+        params.append(STATUS_PENDING)
+    elif view == "approved_rank":
+        where.append("status = ?")
+        params.append(STATUS_APPROVED_RANK)
+    elif view == "approved_no_rank":
+        where.append("status = ?")
+        params.append(STATUS_APPROVED_NO_RANK)
+    elif view == "not_approved":
+        where.append("status = ?")
+        params.append(STATUS_NOT_APPROVED)
+    else:
+        # default: esconda PENDING e NOT_APPROVED
+        where.append("status IN (?, ?)")
+        params.extend([STATUS_APPROVED_RANK, STATUS_APPROVED_NO_RANK])
+
+    sql = "SELECT * FROM rules"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC;"
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
     return rows
+
 
 def add_rule(wrong: str, right: str, notes: str = "", contributor: str = ""):
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO rules (wrong, right, notes, created_at, contributor) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO rules (wrong, right, notes, created_at, contributor, status, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             wrong.strip(),
             right.strip(),
             (notes or "").strip(),
             datetime.now().isoformat(timespec="seconds"),
-            (contributor or "").strip()
-        )
+            (contributor or "").strip(),
+            STATUS_PENDING,  # entra na fila
+            None,
+        ),
     )
     conn.commit()
     conn.close()
+
+
+def set_rule_status(rule_id: int, new_status: str):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE rules SET status = ?, reviewed_at = ? WHERE id = ?",
+        (new_status, datetime.now().isoformat(timespec="seconds"), rule_id),
+    )
+    conn.commit()
+    conn.close()
+
 
 def delete_rule(rule_id: int):
     conn = db_connect()
@@ -167,6 +248,7 @@ def delete_rule(rule_id: int):
     conn.commit()
     conn.close()
 
+
 def clear_rules():
     conn = db_connect()
     cur = conn.cursor()
@@ -174,50 +256,47 @@ def clear_rules():
     conn.commit()
     conn.close()
 
+
 def get_leaderboard(limit: int = 10):
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         SELECT contributor, COUNT(*) as total
         FROM rules
-        WHERE contributor IS NOT NULL AND TRIM(contributor) <> ''
+        WHERE contributor IS NOT NULL
+          AND TRIM(contributor) <> ''
+          AND status = ?
         GROUP BY contributor
         ORDER BY total DESC, contributor ASC
         LIMIT ?;
-    """, (limit,))
+        """,
+        (STATUS_APPROVED_RANK, limit),
+    )
     rows = cur.fetchall()
     conn.close()
     return rows
+
 
 # ----------------------------
 # Correção: múltiplos erros
 # ----------------------------
 def apply_case_like(source_text: str, replacement: str) -> str:
-    """
-    Preserva caixa:
-    - tudo maiúsculo -> tudo maiúsculo
-    - Capitalizado -> capitalizado
-    - resto -> como está
-    """
     if source_text.isupper():
         return replacement.upper()
     if source_text[:1].isupper() and source_text[1:].islower():
         return replacement[:1].upper() + replacement[1:]
     return replacement
 
+
 def correct_text(text: str):
-    """
-    Aplica TODAS as regras encontradas na frase (múltiplos erros).
-    Retorna texto corrigido + lista de alterações.
-    """
-    rules = get_rules()
+    rules = get_rules_list(view="default")  # só aprovadas entram na correção por padrão
     corrected = text
     changes = []
 
     for r in rules:
         wrong = r["wrong"]
         right = r["right"]
-
         if not wrong:
             continue
 
@@ -235,6 +314,22 @@ def correct_text(text: str):
         corrected, _ = pattern.subn(_repl, corrected)
 
     return corrected, changes
+
+
+# ----------------------------
+# Helpers de exibição
+# ----------------------------
+def status_label(status: str) -> str:
+    if status == STATUS_PENDING:
+        return "Pendente de revisão"
+    if status == STATUS_APPROVED_RANK:
+        return "Aprovada (pontua para o ranking)"
+    if status == STATUS_APPROVED_NO_RANK:
+        return "Aprovada (não pontua para o ranking)"
+    if status == STATUS_NOT_APPROVED:
+        return "Não aprovada"
+    return status or ""
+
 
 # ----------------------------
 # Templates (HTML)
@@ -315,6 +410,7 @@ HOME_HTML = """
 </html>
 """
 
+
 ADMIN_HTML = """
 <!doctype html>
 <html lang="pt-br">
@@ -323,7 +419,7 @@ ADMIN_HTML = """
   <title>Painel de Regras - {{title}}</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 16px; }
-    input, textarea { width: 100%; padding: 10px; font-size: 15px; }
+    input, textarea, select { width: 100%; padding: 10px; font-size: 15px; }
     button { padding: 10px 14px; font-size: 15px; cursor: pointer; }
     table { width: 100%; border-collapse: collapse; margin-top: 18px; }
     th, td { border-bottom: 1px solid #eee; padding: 10px; vertical-align: top; text-align: left; }
@@ -335,7 +431,7 @@ ADMIN_HTML = """
     code { background: #f4f4f4; padding: 2px 6px; border-radius: 6px; }
     details { margin-top: 16px; }
     summary { cursor: pointer; font-weight: bold; }
-    .btn-row { display:flex; gap: 10px; flex-wrap: wrap; }
+    .btn-row { display:flex; gap: 10px; flex-wrap: wrap; align-items:center; }
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
     .box { border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin-top: 16px; }
 
@@ -344,9 +440,8 @@ ADMIN_HTML = """
     .logos img { max-height: 60px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
     .credit { margin: 0; color: #444; background: #f7f7f7; border: 1px solid #e6e6e6; padding: 10px 12px; border-radius: 10px; line-height: 1.4; }
 
-    .leaderboard { margin-top: 14px; }
     .leaderboard ol { margin: 8px 0 0 20px; }
-    .top-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 0; }
+    .filters a { margin-right: 10px; }
   </style>
 </head>
 <body>
@@ -363,27 +458,29 @@ ADMIN_HTML = """
       Este site foi desenvolvido pelo discente do DCHT XXI, Tauan Borges, em parceria com o PIBID e o CIEBTEC,
       com o intuito de fomentar a educação científica, a cultura digital e a escrita adequada.
     </p>
-
-    <div class="top-actions">
-      <form method="post" action="{{url_for('logout')}}">
-        <button type="submit">Sair do admin</button>
-      </form>
-    </div>
   </div>
 
   <p class="muted">
-    Cadastre pares <b>errado → correto</b>. A ferramenta aplica todas as regras que encontrar.
-    <br>
     <a href="{{url_for('home')}}">← Voltar para a ferramenta</a>
   </p>
 
+  <div class="btn-row">
+    <form method="post" action="{{url_for('logout')}}">
+      <button type="submit">Sair do admin</button>
+    </form>
+
+    <a class="pill" href="{{url_for('admin_review')}}">
+      Fila de revisão: {{pending_count}} pendente(s)
+    </a>
+  </div>
+
   <p class="muted">
     <span class="pill">Banco: {{db_path}}</span>
-    <span class="pill">Total de regras: {{rules|length}}</span>
+    <span class="pill">Total exibido: {{rules|length}}</span>
   </p>
 
-  <div class="leaderboard box">
-    <h2>Painel de líderes</h2>
+  <div class="box leaderboard">
+    <h2>Painel de líderes (só “Aprovada (pontua)”)</h2>
     {% if leaders and leaders|length > 0 %}
       <ol>
         {% for l in leaders %}
@@ -391,16 +488,15 @@ ADMIN_HTML = """
         {% endfor %}
       </ol>
     {% else %}
-      <p class="muted">Ainda não há contribuições registradas.</p>
+      <p class="muted">Ainda não há contribuições pontuáveis aprovadas.</p>
     {% endif %}
   </div>
 
   <div class="danger">
-    <b>Dica didática:</b> vocês podem criar “missões” para os alunos alimentarem o sistema:
-    (1) identificar o erro, (2) justificar a correção, (3) cadastrar a regra e (4) testar com frases diferentes.
+    <b>Dica didática:</b> os alunos podem cadastrar livremente. Você valida na <b>Fila de revisão</b> o que pontua (ou não) e o que não deve entrar.
   </div>
 
-  <h2>Adicionar nova regra</h2>
+  <h2>Adicionar nova regra (vai para a fila)</h2>
   <form method="post" action="{{url_for('admin_add')}}">
     <div class="row">
       <div>
@@ -418,10 +514,10 @@ ADMIN_HTML = """
     <input name="contributor" placeholder="Ex.: ana_1info" required>
 
     <br><br>
-    <label><b>Observação (opcional)</b> — use para explicar o porquê (tempo verbal, concordância etc.)</label>
+    <label><b>Observação (opcional)</b></label>
     <textarea name="notes" placeholder="Ex.: 1ª pessoa do plural no presente do indicativo"></textarea>
     <br><br>
-    <button type="submit">Salvar regra</button>
+    <button type="submit">Enviar para revisão</button>
   </form>
 
   <details>
@@ -448,7 +544,7 @@ ADMIN_HTML = """
       </p>
 
       <form method="post" action="{{url_for('admin_import')}}">
-        <textarea name="json_payload" placeholder='Cole aqui o JSON do backup (começa com {"exported_at": ... })' style="min-height: 170px;"></textarea>
+        <textarea name="json_payload" placeholder='Cole aqui o JSON do backup' style="min-height: 170px;"></textarea>
         <br><br>
         <label>
           <input type="checkbox" name="replace_all" value="1">
@@ -464,15 +560,26 @@ ADMIN_HTML = """
     </div>
   </details>
 
-  <h2>Regras cadastradas</h2>
+  <h2>Regras (listagem principal)</h2>
+  <p class="muted filters">
+    <b>Filtro:</b>
+    <a href="{{url_for('admin', view='default')}}">Aprovadas (padrão)</a>
+    <a href="{{url_for('admin', view='approved_rank')}}">Aprovadas (pontua)</a>
+    <a href="{{url_for('admin', view='approved_no_rank')}}">Aprovadas (não pontua)</a>
+    <a href="{{url_for('admin', view='all')}}">Todas</a>
+    <a href="{{url_for('admin', view='not_approved')}}">Não aprovadas</a>
+  </p>
+
   <table>
     <thead>
       <tr>
         <th>Errado</th>
         <th>Correto</th>
         <th>Username</th>
+        <th>Status</th>
         <th>Observação</th>
         <th>Criada em</th>
+        <th>Revisada em</th>
         <th>Ação</th>
       </tr>
     </thead>
@@ -482,8 +589,10 @@ ADMIN_HTML = """
           <td><code>{{r.wrong}}</code></td>
           <td><code>{{r.right}}</code></td>
           <td class="muted">{{r.contributor or ""}}</td>
+          <td class="muted">{{status_label(r.status)}}</td>
           <td class="muted">{{r.notes or ""}}</td>
           <td class="muted">{{r.created_at}}</td>
+          <td class="muted">{{r.reviewed_at or ""}}</td>
           <td>
             <form method="post" action="{{url_for('admin_delete', rule_id=r.id)}}" onsubmit="return confirm('Excluir esta regra?');">
               <button type="submit">Excluir</button>
@@ -492,13 +601,96 @@ ADMIN_HTML = """
         </tr>
       {% endfor %}
       {% if not rules %}
-        <tr><td colspan="6" class="muted">Nenhuma regra ainda. Cadastre as primeiras acima.</td></tr>
+        <tr><td colspan="8" class="muted">Nenhuma regra para este filtro.</td></tr>
       {% endif %}
     </tbody>
   </table>
 </body>
 </html>
 """
+
+
+REVIEW_HTML = """
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <title>Fila de revisão - {{title}}</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 16px; }
+    button { padding: 10px 14px; font-size: 14px; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; margin-top: 18px; }
+    th, td { border-bottom: 1px solid #eee; padding: 10px; vertical-align: top; text-align: left; }
+    .muted { color: #666; }
+    code { background: #f4f4f4; padding: 2px 6px; border-radius: 6px; }
+    .btns { display:flex; gap: 8px; flex-wrap: wrap; }
+    .top { display:flex; gap: 10px; align-items:center; flex-wrap: wrap; }
+    a { text-decoration:none; }
+    .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <h1 style="margin:0;">Fila de revisão</h1>
+    <span class="pill">{{pending_count}} pendente(s)</span>
+  </div>
+
+  <p class="muted">
+    <a href="{{url_for('admin')}}">← Voltar para o /admin</a>
+  </p>
+
+  {% if msg %}
+    <p><b>{{msg}}</b></p>
+  {% endif %}
+
+  <table>
+    <thead>
+      <tr>
+        <th>Errado</th>
+        <th>Correto</th>
+        <th>Username</th>
+        <th>Observação</th>
+        <th>Criada em</th>
+        <th>Decisão</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in pending %}
+        <tr>
+          <td><code>{{r.wrong}}</code></td>
+          <td><code>{{r.right}}</code></td>
+          <td class="muted">{{r.contributor or ""}}</td>
+          <td class="muted">{{r.notes or ""}}</td>
+          <td class="muted">{{r.created_at}}</td>
+          <td>
+            <div class="btns">
+              <form method="post" action="{{url_for('admin_review_decide', rule_id=r.id)}}">
+                <input type="hidden" name="decision" value="rank">
+                <button type="submit">Aprovar (pontua)</button>
+              </form>
+
+              <form method="post" action="{{url_for('admin_review_decide', rule_id=r.id)}}">
+                <input type="hidden" name="decision" value="no_rank">
+                <button type="submit">Aprovar (não pontua)</button>
+              </form>
+
+              <form method="post" action="{{url_for('admin_review_decide', rule_id=r.id)}}" onsubmit="return confirm('Marcar como NÃO aprovada?');">
+                <input type="hidden" name="decision" value="not_approved">
+                <button type="submit">Não aprovar</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      {% if not pending %}
+        <tr><td colspan="6" class="muted">Nenhuma regra pendente no momento.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</body>
+</html>
+"""
+
 
 # ----------------------------
 # Rotas (páginas)
@@ -508,7 +700,6 @@ def home():
     text = ""
     result = None
     changes = []
-
     if request.method == "POST":
         text = request.form.get("text", "")
         result, changes = correct_text(text)
@@ -519,23 +710,31 @@ def home():
         text=text,
         result=result,
         changes=changes,
-        db_path=DB_PATH
+        db_path=DB_PATH,
     )
+
 
 @app.route("/admin", methods=["GET"])
 @admin_required
 def admin():
-    rules = get_rules()
-    leaders = get_leaderboard(10)
+    view = request.args.get("view", "default").strip() or "default"
     import_msg = request.args.get("msg", "")
+
+    rules = get_rules_list(view=view)
+    leaders = get_leaderboard(10)
+    pending_count = get_pending_count()
+
     return render_template_string(
         ADMIN_HTML,
         title=APP_TITLE,
         rules=rules,
         leaders=leaders,
+        pending_count=pending_count,
         db_path=DB_PATH,
-        import_msg=import_msg
+        import_msg=import_msg,
+        status_label=status_label,
     )
+
 
 @app.route("/admin/add", methods=["POST"])
 @admin_required
@@ -548,7 +747,43 @@ def admin_add():
     if wrong and right:
         add_rule(wrong, right, notes, contributor)
 
-    return redirect(url_for("admin"))
+    return redirect(url_for("admin_review"))
+
+
+@app.route("/admin/revisao", methods=["GET"])
+@admin_required
+def admin_review():
+    msg = request.args.get("msg", "")
+    pending = get_rules_list(view="pending")
+    pending_count = len(pending)
+    return render_template_string(
+        REVIEW_HTML,
+        title=APP_TITLE,
+        pending=pending,
+        pending_count=pending_count,
+        msg=msg,
+    )
+
+
+@app.route("/admin/revisao/decidir/<int:rule_id>", methods=["POST"])
+@admin_required
+def admin_review_decide(rule_id: int):
+    decision = (request.form.get("decision", "") or "").strip().lower()
+
+    if decision == "rank":
+        set_rule_status(rule_id, STATUS_APPROVED_RANK)
+        return redirect(url_for("admin_review", msg="Regra aprovada (pontua para o ranking)."))
+
+    if decision == "no_rank":
+        set_rule_status(rule_id, STATUS_APPROVED_NO_RANK)
+        return redirect(url_for("admin_review", msg="Regra aprovada (não pontua para o ranking)."))
+
+    if decision == "not_approved":
+        set_rule_status(rule_id, STATUS_NOT_APPROVED)
+        return redirect(url_for("admin_review", msg="Regra marcada como não aprovada."))
+
+    return redirect(url_for("admin_review", msg="Decisão inválida."))
+
 
 @app.route("/admin/delete/<int:rule_id>", methods=["POST"])
 @admin_required
@@ -556,24 +791,28 @@ def admin_delete(rule_id):
     delete_rule(rule_id)
     return redirect(url_for("admin"))
 
+
 # ----------------------------
-# Export / Import com interface
+# Export / Import com interface (protegidos)
 # ----------------------------
 @app.route("/admin/export", methods=["GET"])
 @admin_required
 def admin_export():
-    rules = get_rules()
+    rules = get_rules_list(view="all")
     data = [
         {
             "wrong": r["wrong"],
             "right": r["right"],
             "notes": r["notes"] or "",
-            "contributor": (r["contributor"] or "") if "contributor" in r.keys() else "",
-            "created_at": r["created_at"]
+            "contributor": (r["contributor"] or ""),
+            "status": (r["status"] or ""),
+            "created_at": r["created_at"],
+            "reviewed_at": r["reviewed_at"] if "reviewed_at" in r.keys() else None,
         }
         for r in rules
     ]
     return jsonify({"exported_at": datetime.now().isoformat(timespec="seconds"), "rules": data})
+
 
 @app.route("/admin/export/download", methods=["GET"])
 @admin_required
@@ -586,6 +825,7 @@ def admin_export_download():
     resp.headers["Content-Type"] = "application/json; charset=utf-8"
     resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return resp
+
 
 @app.route("/admin/import", methods=["POST"])
 @admin_required
@@ -606,21 +846,36 @@ def admin_import():
             clear_rules()
 
         count = 0
+        conn = db_connect()
+        cur = conn.cursor()
+
         for item in rules:
             if not isinstance(item, dict):
                 continue
+
             wrong = (item.get("wrong") or "").strip()
             right = (item.get("right") or "").strip()
             notes = (item.get("notes") or "").strip()
             contributor = (item.get("contributor") or "").strip()
+            status = (item.get("status") or "").strip() or STATUS_APPROVED_NO_RANK
+            created_at = (item.get("created_at") or "").strip() or datetime.now().isoformat(timespec="seconds")
+            reviewed_at = item.get("reviewed_at", None)
+
             if wrong and right:
-                add_rule(wrong, right, notes, contributor)
+                cur.execute(
+                    "INSERT INTO rules (wrong, right, notes, created_at, contributor, status, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (wrong, right, notes, created_at, contributor, status, reviewed_at),
+                )
                 count += 1
+
+        conn.commit()
+        conn.close()
 
         return redirect(url_for("admin", msg=f"Importação concluída: {count} regra(s) adicionada(s)."))
 
     except Exception as e:
         return redirect(url_for("admin", msg=f"Erro ao importar JSON: {str(e)}"))
+
 
 @app.route("/admin/clear", methods=["POST"])
 @admin_required
@@ -628,13 +883,15 @@ def admin_clear():
     clear_rules()
     return redirect(url_for("admin", msg="Todas as regras foram apagadas."))
 
-# API simples (caso a turma de informática queira integrar com outra interface)
+
+# API simples (deixa aberta)
 @app.route("/api/correct", methods=["POST"])
 def api_correct():
     data = request.get_json(force=True, silent=True) or {}
     text = data.get("text", "")
     corrected, changes = correct_text(text)
     return jsonify({"input": text, "corrected": corrected, "changes": changes})
+
 
 if __name__ == "__main__":
     app.run()
