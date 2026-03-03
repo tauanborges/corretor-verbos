@@ -28,25 +28,45 @@ STATUS_APPROVED_RANK = "APPROVED_RANK"
 STATUS_APPROVED_NO_RANK = "APPROVED_NO_RANK"
 STATUS_NOT_APPROVED = "NOT_APPROVED"
 
+# Papéis (roles)
+ROLE_ADMIN = "admin"         # alunos responsáveis
+ROLE_REVIEWER = "reviewer"   # professor
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 
 # ----------------------------
-# Autenticação simples do /admin (senha via env var)
+# Autorização por papel
 # ----------------------------
 def admin_required(fn):
+    """Permite acessar /admin para admin (alunos) e reviewer (professor)."""
     @wraps(fn)
     def wrapper(*args, **kwargs):
         admin_pass = os.environ.get("ADMIN_PASSWORD", "")
-        if not admin_pass:
-            return "ADMIN_PASSWORD não configurada no Render.", 500
-        if session.get("is_admin") is True:
+        review_pass = os.environ.get("REVIEW_PASSWORD", "")
+        if not admin_pass or not review_pass:
+            return "ADMIN_PASSWORD e/ou REVIEW_PASSWORD não configuradas no Render.", 500
+
+        if session.get("role") in (ROLE_ADMIN, ROLE_REVIEWER):
             return fn(*args, **kwargs)
+
         return redirect(url_for("login", next=request.path))
     return wrapper
 
 
+def reviewer_required(fn):
+    """Acesso exclusivo do professor para revisão/aprovação e ações sensíveis."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if session.get("role") == ROLE_REVIEWER:
+            return fn(*args, **kwargs)
+        return "Acesso restrito ao professor revisor.", 403
+    return wrapper
+
+
+# ----------------------------
+# Login
+# ----------------------------
 LOGIN_HTML = """
 <!doctype html>
 <html lang="pt-br">
@@ -65,11 +85,11 @@ LOGIN_HTML = """
 </head>
 <body>
   <h1>Área restrita</h1>
-  <p class="muted">Entre com a senha para acessar o painel /admin.</p>
+  <p class="muted">Entre com a senha para acessar o painel.</p>
 
   <div class="box">
     <form method="post" action="{{url_for('login')}}">
-      <label><b>Senha do admin</b></label><br>
+      <label><b>Senha</b></label><br>
       <input type="password" name="password" required autofocus>
       <input type="hidden" name="next" value="{{next_url}}">
       <br><br>
@@ -90,13 +110,33 @@ LOGIN_HTML = """
 @app.route("/login", methods=["GET", "POST"])
 def login():
     next_url = request.values.get("next", "/admin")
+
     if request.method == "POST":
         password = request.form.get("password", "")
+
         admin_pass = os.environ.get("ADMIN_PASSWORD", "")
-        if admin_pass and password == admin_pass:
-            session["is_admin"] = True
+        review_pass = os.environ.get("REVIEW_PASSWORD", "")
+
+        if not admin_pass or not review_pass:
+            return render_template_string(
+                LOGIN_HTML,
+                title=APP_TITLE,
+                error="ADMIN_PASSWORD e/ou REVIEW_PASSWORD não configuradas no Render.",
+                next_url=next_url,
+            )
+
+        # Professor
+        if password == review_pass:
+            session["role"] = ROLE_REVIEWER
             return redirect(next_url or "/admin")
+
+        # Alunos responsáveis
+        if password == admin_pass:
+            session["role"] = ROLE_ADMIN
+            return redirect(next_url or "/admin")
+
         return render_template_string(LOGIN_HTML, title=APP_TITLE, error="Senha incorreta.", next_url=next_url)
+
     return render_template_string(LOGIN_HTML, title=APP_TITLE, error="", next_url=next_url)
 
 
@@ -119,7 +159,6 @@ def db_init():
     conn = db_connect()
     cur = conn.cursor()
 
-    # Base
     cur.execute("""
         CREATE TABLE IF NOT EXISTS rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,8 +180,7 @@ def db_init():
         except sqlite3.OperationalError:
             pass
 
-    # Para regras antigas sem status: mantém correção funcionando e evita “inflar” ranking.
-    # (Vão aparecer como "Aprovada (não pontua)" por padrão.)
+    # Para regras antigas sem status: não pontuam por padrão (evita inflar ranking)
     cur.execute("""
         UPDATE rules
         SET status = ?
@@ -173,7 +211,7 @@ def get_rules_list(view: str = "default"):
       - pending: só pendentes
       - approved_rank: só aprovadas que pontuam
       - approved_no_rank: só aprovadas que não pontuam
-      - not_approved: só não aprovadas (ocultas no default)
+      - not_approved: só não aprovadas
     """
     conn = db_connect()
     cur = conn.cursor()
@@ -222,7 +260,7 @@ def add_rule(wrong: str, right: str, notes: str = "", contributor: str = ""):
             (notes or "").strip(),
             datetime.now().isoformat(timespec="seconds"),
             (contributor or "").strip(),
-            STATUS_PENDING,  # entra na fila
+            STATUS_PENDING,
             None,
         ),
     )
@@ -375,7 +413,7 @@ HOME_HTML = """
   <p class="muted">
     Digite uma frase e a ferramenta tentará corrigir com base nas regras cadastradas pela turma.
     <br>
-    <a href="{{url_for('admin')}}">Ir para o painel de regras (/admin)</a>
+    <a href="{{url_for('admin')}}">Ir para o painel (/admin)</a>
   </p>
 
   <p class="muted">
@@ -402,7 +440,7 @@ HOME_HTML = """
           {% endfor %}
         </ul>
       {% else %}
-        <p class="muted">Nenhuma regra cadastrada bateu com o texto. (Talvez falte cadastrar esse caso no /admin.)</p>
+        <p class="muted">Nenhuma regra cadastrada bateu com o texto.</p>
       {% endif %}
     </div>
   {% endif %}
@@ -416,10 +454,10 @@ ADMIN_HTML = """
 <html lang="pt-br">
 <head>
   <meta charset="utf-8">
-  <title>Painel de Regras - {{title}}</title>
+  <title>Painel - {{title}}</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 16px; }
-    input, textarea, select { width: 100%; padding: 10px; font-size: 15px; }
+    input, textarea { width: 100%; padding: 10px; font-size: 15px; }
     button { padding: 10px 14px; font-size: 15px; cursor: pointer; }
     table { width: 100%; border-collapse: collapse; margin-top: 18px; }
     th, td { border-bottom: 1px solid #eee; padding: 10px; vertical-align: top; text-align: left; }
@@ -434,31 +472,12 @@ ADMIN_HTML = """
     .btn-row { display:flex; gap: 10px; flex-wrap: wrap; align-items:center; }
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
     .box { border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin-top: 16px; }
-
-    .header { margin: 14px 0 18px; }
-    .logos { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-    .logos img { max-height: 60px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
-    .credit { margin: 0; color: #444; background: #f7f7f7; border: 1px solid #e6e6e6; padding: 10px 12px; border-radius: 10px; line-height: 1.4; }
-
     .leaderboard ol { margin: 8px 0 0 20px; }
     .filters a { margin-right: 10px; }
   </style>
 </head>
 <body>
-  <h1>Painel de Regras</h1>
-
-  <div class="header">
-    <div class="logos">
-      <img src="{{url_for('static', filename='logo_dchtxxi.jpg')}}" alt="Logo DCHT XXI">
-      <img src="{{url_for('static', filename='logo_ciebtec.jpg')}}" alt="Logo CIEBTEC">
-      <img src="{{url_for('static', filename='logo_pibid.jpg')}}" alt="Logo PIBID">
-    </div>
-
-    <p class="credit">
-      Este site foi desenvolvido pelo discente do DCHT XXI, Tauan Borges, em parceria com o PIBID e o CIEBTEC,
-      com o intuito de fomentar a educação científica, a cultura digital e a escrita adequada.
-    </p>
-  </div>
+  <h1>Painel</h1>
 
   <p class="muted">
     <a href="{{url_for('home')}}">← Voltar para a ferramenta</a>
@@ -466,12 +485,16 @@ ADMIN_HTML = """
 
   <div class="btn-row">
     <form method="post" action="{{url_for('logout')}}">
-      <button type="submit">Sair do admin</button>
+      <button type="submit">Sair</button>
     </form>
 
-    <a class="pill" href="{{url_for('admin_review')}}">
-      Fila de revisão: {{pending_count}} pendente(s)
-    </a>
+    {% if role == "reviewer" %}
+      <a class="pill" href="{{url_for('admin_review')}}">
+        Fila de revisão: {{pending_count}} pendente(s)
+      </a>
+    {% else %}
+      <span class="pill">Pendentes: {{pending_count}} (somente o professor revisa)</span>
+    {% endif %}
   </div>
 
   <p class="muted">
@@ -493,14 +516,14 @@ ADMIN_HTML = """
   </div>
 
   <div class="danger">
-    <b>Dica didática:</b> os alunos podem cadastrar livremente. Você valida na <b>Fila de revisão</b> o que pontua (ou não) e o que não deve entrar.
+    <b>Fluxo:</b> novas regras entram como <b>Pendentes</b> e serão revisadas pelo professor.
   </div>
 
-  <h2>Adicionar nova regra (vai para a fila)</h2>
+  <h2>Adicionar nova regra (vai para revisão)</h2>
   <form method="post" action="{{url_for('admin_add')}}">
     <div class="row">
       <div>
-        <label><b>Forma errada (como o aluno costuma escrever)</b></label>
+        <label><b>Forma errada</b></label>
         <input name="wrong" placeholder="Ex.: nós vai" required>
       </div>
       <div>
@@ -515,11 +538,12 @@ ADMIN_HTML = """
 
     <br><br>
     <label><b>Observação (opcional)</b></label>
-    <textarea name="notes" placeholder="Ex.: 1ª pessoa do plural no presente do indicativo"></textarea>
+    <textarea name="notes" placeholder="Ex.: comentário rápido (se quiserem)"></textarea>
     <br><br>
     <button type="submit">Enviar para revisão</button>
   </form>
 
+  {% if role == "reviewer" %}
   <details>
     <summary>Backup/Restaurar (Importar/Exportar)</summary>
     <div class="info">
@@ -539,10 +563,6 @@ ADMIN_HTML = """
       </div>
 
       <h3>Importar regras</h3>
-      <p class="muted">
-        Abra o arquivo JSON do backup, copie tudo e cole abaixo. Depois clique em <b>Importar</b>.
-      </p>
-
       <form method="post" action="{{url_for('admin_import')}}">
         <textarea name="json_payload" placeholder='Cole aqui o JSON do backup' style="min-height: 170px;"></textarea>
         <br><br>
@@ -559,16 +579,20 @@ ADMIN_HTML = """
       {% endif %}
     </div>
   </details>
+  {% endif %}
 
-  <h2>Regras (listagem principal)</h2>
-  <p class="muted filters">
-    <b>Filtro:</b>
-    <a href="{{url_for('admin', view='default')}}">Aprovadas (padrão)</a>
-    <a href="{{url_for('admin', view='approved_rank')}}">Aprovadas (pontua)</a>
-    <a href="{{url_for('admin', view='approved_no_rank')}}">Aprovadas (não pontua)</a>
-    <a href="{{url_for('admin', view='all')}}">Todas</a>
-    <a href="{{url_for('admin', view='not_approved')}}">Não aprovadas</a>
-  </p>
+  <h2>Regras</h2>
+
+  {% if role == "reviewer" %}
+    <p class="muted filters">
+      <b>Filtro:</b>
+      <a href="{{url_for('admin', view='default')}}">Aprovadas (padrão)</a>
+      <a href="{{url_for('admin', view='approved_rank')}}">Aprovadas (pontua)</a>
+      <a href="{{url_for('admin', view='approved_no_rank')}}">Aprovadas (não pontua)</a>
+      <a href="{{url_for('admin', view='all')}}">Todas</a>
+      <a href="{{url_for('admin', view='not_approved')}}">Não aprovadas</a>
+    </p>
+  {% endif %}
 
   <table>
     <thead>
@@ -594,9 +618,13 @@ ADMIN_HTML = """
           <td class="muted">{{r.created_at}}</td>
           <td class="muted">{{r.reviewed_at or ""}}</td>
           <td>
-            <form method="post" action="{{url_for('admin_delete', rule_id=r.id)}}" onsubmit="return confirm('Excluir esta regra?');">
-              <button type="submit">Excluir</button>
-            </form>
+            {% if role == "reviewer" %}
+              <form method="post" action="{{url_for('admin_delete', rule_id=r.id)}}" onsubmit="return confirm('Excluir esta regra?');">
+                <button type="submit">Excluir</button>
+              </form>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
           </td>
         </tr>
       {% endfor %}
@@ -717,8 +745,14 @@ def home():
 @app.route("/admin", methods=["GET"])
 @admin_required
 def admin():
-    view = request.args.get("view", "default").strip() or "default"
+    role = session.get("role")
     import_msg = request.args.get("msg", "")
+
+    # Alunos não podem escolher filtros avançados: sempre default
+    if role == ROLE_REVIEWER:
+        view = request.args.get("view", "default").strip() or "default"
+    else:
+        view = "default"
 
     rules = get_rules_list(view=view)
     leaders = get_leaderboard(10)
@@ -733,6 +767,7 @@ def admin():
         db_path=DB_PATH,
         import_msg=import_msg,
         status_label=status_label,
+        role=role,
     )
 
 
@@ -747,11 +782,14 @@ def admin_add():
     if wrong and right:
         add_rule(wrong, right, notes, contributor)
 
-    return redirect(url_for("admin_review"))
+    # Professor vai para fila, aluno volta para /admin
+    if session.get("role") == ROLE_REVIEWER:
+        return redirect(url_for("admin_review"))
+    return redirect(url_for("admin"))
 
 
 @app.route("/admin/revisao", methods=["GET"])
-@admin_required
+@reviewer_required
 def admin_review():
     msg = request.args.get("msg", "")
     pending = get_rules_list(view="pending")
@@ -766,7 +804,7 @@ def admin_review():
 
 
 @app.route("/admin/revisao/decidir/<int:rule_id>", methods=["POST"])
-@admin_required
+@reviewer_required
 def admin_review_decide(rule_id: int):
     decision = (request.form.get("decision", "") or "").strip().lower()
 
@@ -786,17 +824,17 @@ def admin_review_decide(rule_id: int):
 
 
 @app.route("/admin/delete/<int:rule_id>", methods=["POST"])
-@admin_required
-def admin_delete(rule_id):
+@reviewer_required
+def admin_delete(rule_id: int):
     delete_rule(rule_id)
     return redirect(url_for("admin"))
 
 
 # ----------------------------
-# Export / Import com interface (protegidos)
+# Export / Import / Clear (SOMENTE PROFESSOR)
 # ----------------------------
 @app.route("/admin/export", methods=["GET"])
-@admin_required
+@reviewer_required
 def admin_export():
     rules = get_rules_list(view="all")
     data = [
@@ -815,7 +853,7 @@ def admin_export():
 
 
 @app.route("/admin/export/download", methods=["GET"])
-@admin_required
+@reviewer_required
 def admin_export_download():
     payload = admin_export().get_json()
     filename = "regras-backup.json"
@@ -828,7 +866,7 @@ def admin_export_download():
 
 
 @app.route("/admin/import", methods=["POST"])
-@admin_required
+@reviewer_required
 def admin_import():
     json_payload = request.form.get("json_payload", "").strip()
     replace_all = request.form.get("replace_all") == "1"
@@ -878,7 +916,7 @@ def admin_import():
 
 
 @app.route("/admin/clear", methods=["POST"])
-@admin_required
+@reviewer_required
 def admin_clear():
     clear_rules()
     return redirect(url_for("admin", msg="Todas as regras foram apagadas."))
