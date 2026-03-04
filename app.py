@@ -471,8 +471,19 @@ ADMIN_HTML = """
     summary { cursor: pointer; font-weight: bold; }
     .btn-row { display:flex; gap: 10px; flex-wrap: wrap; align-items:center; }
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
-    .box { border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin-top: 16px; }
-    .leaderboard ol { margin: 8px 0 0 20px; }
+
+    /* Cards mais atrativos */
+    .box { border: 1px solid #e6e6e6; border-radius: 14px; padding: 16px; margin-top: 16px; background: #fff; box-shadow: 0 1px 10px rgba(0,0,0,0.04); }
+
+    /* Títulos mais bonitos */
+    h2 { margin-top: 30px; border-left: 6px solid #2b7cff; padding-left: 12px; }
+
+    /* Leaderboard */
+    .leaderboard ol { margin: 10px 0 0 22px; padding: 0; }
+    .leaderboard li { margin: 8px 0; }
+    .leaderboard .lead-note { margin: 0; margin-top: 6px; }
+    .medal { display:inline-block; min-width: 26px; text-align:center; }
+
     .filters a { margin-right: 10px; }
   </style>
 </head>
@@ -503,15 +514,30 @@ ADMIN_HTML = """
   </p>
 
   <div class="box leaderboard">
-    <h2>Painel de líderes (só “Aprovada (pontua)”)</h2>
+    <h2>🏆 Painel de Líderes da Conjugação</h2>
+    <p class="muted lead-note">
+      Destaques da turma: quem mais contribuiu com regras aprovadas para melhorar a ferramenta.
+    </p>
+
     {% if leaders and leaders|length > 0 %}
       <ol>
         {% for l in leaders %}
-          <li><b>{{l.contributor}}</b> — {{l.total}} contribuição(ões)</li>
+          <li>
+            {% if loop.index == 1 %}
+              <span class="medal">🥇</span>
+            {% elif loop.index == 2 %}
+              <span class="medal">🥈</span>
+            {% elif loop.index == 3 %}
+              <span class="medal">🥉</span>
+            {% else %}
+              <span class="medal">⭐</span>
+            {% endif %}
+            <b>{{l.contributor}}</b> — {{l.total}} contribuição(ões)
+          </li>
         {% endfor %}
       </ol>
     {% else %}
-      <p class="muted">Ainda não há contribuições pontuáveis aprovadas.</p>
+      <p class="muted">Ainda não há contribuições aprovadas para o ranking. Vamos começar? 🙂</p>
     {% endif %}
   </div>
 
@@ -519,7 +545,11 @@ ADMIN_HTML = """
     <b>Fluxo:</b> novas regras entram como <b>Pendentes</b> e serão revisadas pelo professor.
   </div>
 
-  <h2>Adicionar nova regra (vai para revisão)</h2>
+  <h2>✏️ Contribuir com uma nova regra</h2>
+  <p class="muted">
+    Ajude a melhorar a ferramenta cadastrando erros comuns de conjugação e suas correções.
+  </p>
+
   <form method="post" action="{{url_for('admin_add')}}">
     <div class="row">
       <div>
@@ -540,7 +570,7 @@ ADMIN_HTML = """
     <label><b>Observação (opcional)</b></label>
     <textarea name="notes" placeholder="Ex.: comentário rápido (se quiserem)"></textarea>
     <br><br>
-    <button type="submit">Enviar para revisão</button>
+    <button type="submit">Enviar contribuição</button>
   </form>
 
   {% if role == "reviewer" %}
