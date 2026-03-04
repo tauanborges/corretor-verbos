@@ -385,13 +385,31 @@ HOME_HTML = """
     .box { border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin-top: 16px; }
     .muted { color: #666; }
     .changes li { margin: 6px 0; }
+
     a { text-decoration: none; }
+
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
 
     .header { margin: 14px 0 18px; }
     .logos { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
     .logos img { max-height: 60px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
     .credit { margin: 0; color: #444; background: #f7f7f7; border: 1px solid #e6e6e6; padding: 10px 12px; border-radius: 10px; line-height: 1.4; }
+
+    /* Botãozinho (link com cara de botão) */
+    .btn-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid #d8e6ff;
+      background: #eef5ff;
+      color: #1456c2;
+      font-weight: 700;
+      line-height: 1;
+      margin-top: 10px;
+    }
+    .btn-link:hover { filter: brightness(0.98); }
   </style>
 </head>
 <body>
@@ -413,7 +431,7 @@ HOME_HTML = """
   <p class="muted">
     Digite uma frase e a ferramenta tentará corrigir com base nas regras cadastradas pela turma.
     <br>
-    <a href="{{url_for('admin')}}">Ir para o painel (/admin)</a>
+    <a class="btn-link" href="{{url_for('admin')}}">🔐 Abrir Painel</a>
   </p>
 
   <p class="muted">
@@ -484,14 +502,35 @@ ADMIN_HTML = """
     .leaderboard .lead-note { margin: 0; margin-top: 6px; }
     .medal { display:inline-block; min-width: 26px; text-align:center; }
 
-    .filters a { margin-right: 10px; }
+    /* ===== Botõezinhos dos filtros ===== */
+    .chip-row { display:flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+    .chip {
+      display:inline-flex;
+      align-items:center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid #e3e3e3;
+      background: #fafafa;
+      color: #333;
+      font-weight: 700;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .chip:hover { filter: brightness(0.98); }
+    .chip.active {
+      border-color: #2b7cff;
+      background: #eef5ff;
+      color: #1456c2;
+      box-shadow: 0 1px 10px rgba(43,124,255,0.12);
+    }
   </style>
 </head>
 <body>
   <h1>Painel</h1>
 
   <p class="muted">
-    <a href="{{url_for('home')}}">← Voltar para a ferramenta</a>
+    <a class="chip" href="{{url_for('home')}}">⬅ Voltar para a ferramenta</a>
   </p>
 
   <div class="btn-row">
@@ -614,14 +653,16 @@ ADMIN_HTML = """
   <h2>Regras</h2>
 
   {% if role == "reviewer" %}
-    <p class="muted filters">
+    <div class="muted">
       <b>Filtro:</b>
-      <a href="{{url_for('admin', view='default')}}">Aprovadas (padrão)</a>
-      <a href="{{url_for('admin', view='approved_rank')}}">Aprovadas (pontua)</a>
-      <a href="{{url_for('admin', view='approved_no_rank')}}">Aprovadas (não pontua)</a>
-      <a href="{{url_for('admin', view='all')}}">Todas</a>
-      <a href="{{url_for('admin', view='not_approved')}}">Não aprovadas</a>
-    </p>
+      <div class="chip-row">
+        <a class="chip {% if view == 'default' %}active{% endif %}" href="{{url_for('admin', view='default')}}">✅ Aprovadas (padrão)</a>
+        <a class="chip {% if view == 'approved_rank' %}active{% endif %}" href="{{url_for('admin', view='approved_rank')}}">🏆 Aprovadas (pontua)</a>
+        <a class="chip {% if view == 'approved_no_rank' %}active{% endif %}" href="{{url_for('admin', view='approved_no_rank')}}">⭐ Aprovadas (não pontua)</a>
+        <a class="chip {% if view == 'all' %}active{% endif %}" href="{{url_for('admin', view='all')}}">📚 Todas</a>
+        <a class="chip {% if view == 'not_approved' %}active{% endif %}" href="{{url_for('admin', view='not_approved')}}">🚫 Não aprovadas</a>
+      </div>
+    </div>
   {% endif %}
 
   <table>
@@ -685,6 +726,11 @@ REVIEW_HTML = """
     .top { display:flex; gap: 10px; align-items:center; flex-wrap: wrap; }
     a { text-decoration:none; }
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
+    .chip {
+      display:inline-flex; align-items:center; gap:8px;
+      padding: 8px 12px; border-radius:999px;
+      border:1px solid #e3e3e3; background:#fafafa; color:#333; font-weight:700; font-size:13px;
+    }
   </style>
 </head>
 <body>
@@ -694,7 +740,7 @@ REVIEW_HTML = """
   </div>
 
   <p class="muted">
-    <a href="{{url_for('admin')}}">← Voltar para o /admin</a>
+    <a class="chip" href="{{url_for('admin')}}">⬅ Voltar para o Painel</a>
   </p>
 
   {% if msg %}
@@ -798,6 +844,7 @@ def admin():
         import_msg=import_msg,
         status_label=status_label,
         role=role,
+        view=view,  # <-- necessário para destacar o filtro ativo
     )
 
 
