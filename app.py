@@ -2,7 +2,7 @@ import os
 import re
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, date
 from functools import wraps
 from flask import (
     Flask,
@@ -15,7 +15,7 @@ from flask import (
     session,
 )
 
-APP_TITLE = "CONJUGA CIEBTEC"  # se quiser: "CONJUGANDO CIEBTEC"
+APP_TITLE = "CONJUGA CIEBTEC"
 
 # =========================================================
 # Render Free: use /tmp (gravável). Pode resetar em reinícios.
@@ -81,21 +81,8 @@ LOGIN_HTML = """
     .muted { color:#666; }
     .err { color:#b00020; margin-top: 10px; }
     a { text-decoration: none; }
-
-    /* Botãozinho (link com cara de botão) */
-    .btn-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 12px;
-      border: 1px solid #d8e6ff;
-      background: #eef5ff;
-      color: #1456c2;
-      font-weight: 700;
-      line-height: 1;
-    }
-    .btn-link:hover { filter: brightness(0.98); }
+    .btn { display:inline-block; padding: 10px 14px; border:1px solid #ddd; border-radius: 10px; background:#f7f7f7; }
+    .btn:hover { background:#f0f0f0; }
   </style>
 </head>
 <body>
@@ -116,9 +103,7 @@ LOGIN_HTML = """
     {% endif %}
   </div>
 
-  <p class="muted" style="margin-top:14px;">
-    <a class="btn-link" href="{{url_for('home')}}">⬅ Voltar para a ferramenta</a>
-  </p>
+  <p class="muted"><a class="btn" href="{{url_for('home')}}">← Voltar para a ferramenta</a></p>
 </body>
 </html>
 """
@@ -197,6 +182,17 @@ def db_init():
         except sqlite3.OperationalError:
             pass
 
+    # Tabela para registrar uso diário (streak)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS usage_days (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            day TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(username, day)
+        );
+    """)
+
     # Para regras antigas sem status: não pontuam por padrão (evita inflar ranking)
     cur.execute("""
         UPDATE rules
@@ -251,7 +247,6 @@ def get_rules_list(view: str = "default"):
         where.append("status = ?")
         params.append(STATUS_NOT_APPROVED)
     else:
-        # default: esconda PENDING e NOT_APPROVED
         where.append("status IN (?, ?)")
         params.extend([STATUS_APPROVED_RANK, STATUS_APPROVED_NO_RANK])
 
@@ -264,6 +259,45 @@ def get_rules_list(view: str = "default"):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def is_duplicate_rule(wrong: str, right: str) -> bool:
+    """Duplicata exata (ignorando maiúsc/minúsc) do par errado→certo."""
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(*) FROM rules
+        WHERE LOWER(TRIM(wrong)) = LOWER(TRIM(?))
+          AND LOWER(TRIM(right)) = LOWER(TRIM(?));
+        """,
+        (wrong, right),
+    )
+    n = int(cur.fetchone()[0])
+    conn.close()
+    return n > 0
+
+
+def count_rules_today(contributor: str) -> int:
+    """Quantas regras esse aluno enviou hoje (pelo created_at)."""
+    if not contributor:
+        return 0
+    today = date.today().isoformat()  # YYYY-MM-DD
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(*) FROM rules
+        WHERE contributor IS NOT NULL
+          AND TRIM(contributor) <> ''
+          AND LOWER(TRIM(contributor)) = LOWER(TRIM(?))
+          AND created_at LIKE ?;
+        """,
+        (contributor, f"{today}%"),
+    )
+    n = int(cur.fetchone()[0])
+    conn.close()
+    return n
 
 
 def add_rule(wrong: str, right: str, notes: str = "", contributor: str = ""):
@@ -312,7 +346,8 @@ def clear_rules():
     conn.close()
 
 
-def get_leaderboard(limit: int = 10):
+def get_hall_of_fame(limit: int = 10):
+    """Hall da fama (geral) – só aprovadas que pontuam."""
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(
@@ -331,6 +366,105 @@ def get_leaderboard(limit: int = 10):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def get_top_week(days: int = 7, limit: int = 10):
+    """Top da semana (últimos X dias) usando reviewed_at e status pontuável."""
+    since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT contributor, COUNT(*) as total
+        FROM rules
+        WHERE contributor IS NOT NULL
+          AND TRIM(contributor) <> ''
+          AND status = ?
+          AND reviewed_at IS NOT NULL
+          AND reviewed_at >= ?
+        GROUP BY contributor
+        ORDER BY total DESC, contributor ASC
+        LIMIT ?;
+        """,
+        (STATUS_APPROVED_RANK, since, limit),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_news_feed(limit: int = 10):
+    """Últimas regras aprovadas (pontua e não pontua) com reviewed_at."""
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT wrong, right, contributor, status, reviewed_at
+        FROM rules
+        WHERE status IN (?, ?)
+          AND reviewed_at IS NOT NULL
+        ORDER BY reviewed_at DESC
+        LIMIT ?;
+        """,
+        (STATUS_APPROVED_RANK, STATUS_APPROVED_NO_RANK, limit),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# ----------------------------
+# Streak (uso por 3 dias)
+# ----------------------------
+def register_usage_day(username: str):
+    """Registra que o aluno usou a ferramenta hoje (uma vez por dia)."""
+    username = (username or "").strip()
+    if not username:
+        return
+
+    today = date.today().isoformat()
+    conn = db_connect()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT OR IGNORE INTO usage_days (username, day, created_at) VALUES (?, ?, ?);",
+            (username, today, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_streak(username: str) -> int:
+    """Streak de dias seguidos (conta a partir de hoje, voltando)."""
+    username = (username or "").strip()
+    if not username:
+        return 0
+
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT day FROM usage_days
+        WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
+        ORDER BY day DESC
+        LIMIT 30;
+        """,
+        (username,),
+    )
+    days = [row["day"] for row in cur.fetchall()]
+    conn.close()
+
+    if not days:
+        return 0
+
+    days_set = set(days)
+    streak = 0
+    d = date.today()
+    while d.isoformat() in days_set:
+        streak += 1
+        d = d - timedelta(days=1)
+    return streak
 
 
 # ----------------------------
@@ -398,44 +532,24 @@ HOME_HTML = """
   <style>
     body { font-family: Arial, sans-serif; max-width: 900px; margin: 30px auto; padding: 0 16px; }
     textarea { width: 100%; min-height: 120px; padding: 10px; font-size: 16px; }
-    button { padding: 10px 14px; font-size: 16px; cursor: pointer; }
-    .box { border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin-top: 16px; }
+    input { width: 100%; padding: 10px; font-size: 16px; }
+    button { padding: 10px 14px; font-size: 16px; cursor: pointer; border-radius: 10px; border:1px solid #ddd; background:#f7f7f7; }
+    button:hover { background:#f0f0f0; }
+    .box { border: 1px solid #e6e6e6; border-radius: 14px; padding: 16px; margin-top: 16px; background: #fff; box-shadow: 0 1px 10px rgba(0,0,0,0.04); }
     .muted { color: #666; }
     .changes li { margin: 6px 0; }
     a { text-decoration: none; }
-    .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
+    .pill { display:inline-block; padding: 6px 12px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
+    .btnlink { display:inline-block; padding: 10px 14px; border:1px solid #ddd; border-radius: 10px; background:#f7f7f7; }
+    .btnlink:hover { background:#f0f0f0; }
 
     .header { margin: 14px 0 18px; }
     .logos { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
     .logos img { max-height: 60px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
-
-    /* Frase um pouquinho maior */
-    .credit {
-      margin: 0;
-      color: #444;
-      background: #f7f7f7;
-      border: 1px solid #e6e6e6;
-      padding: 12px 14px;
-      border-radius: 10px;
-      line-height: 1.45;
-      font-size: 16px; /* <-- aumentado (antes estava no padrão) */
-    }
-
-    /* Botãozinho (link com cara de botão) */
-    .btn-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 12px;
-      border: 1px solid #d8e6ff;
-      background: #eef5ff;
-      color: #1456c2;
-      font-weight: 700;
-      line-height: 1;
-      margin-top: 10px;
-    }
-    .btn-link:hover { filter: brightness(0.98); }
+    .credit { margin: 0; color: #444; background: #f7f7f7; border: 1px solid #e6e6e6; padding: 14px 14px; border-radius: 12px; line-height: 1.5; font-size: 16px; }
+    .row2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 700px) { .row2 { grid-template-columns: 1fr; } }
+    h2 { margin-top: 26px; border-left: 6px solid #2b7cff; padding-left: 12px; }
   </style>
 </head>
 <body>
@@ -456,27 +570,52 @@ HOME_HTML = """
 
   <p class="muted">
     Digite uma frase e a ferramenta tentará corrigir com base nas regras cadastradas pela turma.
-    <br>
-    <a class="btn-link" href="{{url_for('admin')}}">🔐 Abrir Painel</a>
+  </p>
+
+  <p>
+    <a class="btnlink" href="{{url_for('admin')}}">🔒 Ir para o painel</a>
   </p>
 
   <p class="muted">
     <span class="pill">Banco: {{db_path}}</span>
   </p>
 
+  {% if streak_username %}
+    <div class="box">
+      <h2>🔥 Sequência do aluno</h2>
+      <p style="margin:0;">
+        <b>@{{streak_username}}</b> — sequência atual: <b>{{streak}}</b> dia(s).
+        {% if streak >= 3 %}
+          <span class="pill">✅ Bônus liberado (3 dias seguidos)</span>
+        {% else %}
+          <span class="pill">Meta: 3 dias seguidos</span>
+        {% endif %}
+      </p>
+    </div>
+  {% endif %}
+
   <form method="post" action="{{url_for('home')}}">
-    <label><b>Frase do aluno</b></label><br>
-    <textarea name="text" placeholder="Ex.: nós vai amanhã e eles foi ontem...">{{text or ""}}</textarea><br><br>
-    <button type="submit">Corrigir</button>
+    <div class="row2">
+      <div>
+        <label><b>Username (opcional, para contar a sequência)</b></label><br>
+        <input name="username" placeholder="Ex.: ana_1info" value="{{username or ''}}">
+      </div>
+      <div>
+        <label><b>Frase do aluno</b></label><br>
+        <textarea name="text" placeholder="Ex.: nós vai amanhã e eles foi ontem...">{{text or ""}}</textarea>
+      </div>
+    </div>
+    <br>
+    <button type="submit">✅ Corrigir</button>
   </form>
 
   {% if result is not none %}
     <div class="box">
       <h2>Resultado</h2>
       <p><b>Texto corrigido:</b></p>
-      <div class="box" style="background:#fafafa;">{{result}}</div>
+      <div class="box" style="background:#fafafa; box-shadow:none;">{{result}}</div>
 
-      <h3>Alterações encontradas ({{changes|length}})</h3>
+      <h2 style="margin-top:18px;">Alterações encontradas ({{changes|length}})</h2>
       {% if changes %}
         <ul class="changes">
           {% for c in changes %}
@@ -502,61 +641,48 @@ ADMIN_HTML = """
   <style>
     body { font-family: Arial, sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 16px; }
     input, textarea { width: 100%; padding: 10px; font-size: 15px; }
-    button { padding: 10px 14px; font-size: 15px; cursor: pointer; }
+    button { padding: 10px 14px; font-size: 15px; cursor: pointer; border-radius: 10px; border:1px solid #ddd; background:#f7f7f7; }
+    button:hover { background:#f0f0f0; }
     table { width: 100%; border-collapse: collapse; margin-top: 18px; }
     th, td { border-bottom: 1px solid #eee; padding: 10px; vertical-align: top; text-align: left; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .muted { color: #666; }
-    .danger { background: #ffecec; border: 1px solid #ffbcbc; padding: 10px; border-radius: 8px; }
-    .info { background: #eef6ff; border: 1px solid #b9dcff; padding: 10px; border-radius: 8px; }
+    .danger { background: #fff6f6; border: 1px solid #ffd0d0; padding: 12px; border-radius: 12px; }
+    .info { background: #eef6ff; border: 1px solid #b9dcff; padding: 12px; border-radius: 12px; }
     a { text-decoration: none; }
     code { background: #f4f4f4; padding: 2px 6px; border-radius: 6px; }
     details { margin-top: 16px; }
     summary { cursor: pointer; font-weight: bold; }
     .btn-row { display:flex; gap: 10px; flex-wrap: wrap; align-items:center; }
-    .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
+    .pill { display:inline-block; padding: 6px 12px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
 
-    /* Cards mais atrativos */
     .box { border: 1px solid #e6e6e6; border-radius: 14px; padding: 16px; margin-top: 16px; background: #fff; box-shadow: 0 1px 10px rgba(0,0,0,0.04); }
-
-    /* Títulos mais bonitos */
     h2 { margin-top: 30px; border-left: 6px solid #2b7cff; padding-left: 12px; }
 
-    /* Leaderboard */
+    .boards { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 900px) { .boards { grid-template-columns: 1fr; } }
+
     .leaderboard ol { margin: 10px 0 0 22px; padding: 0; }
     .leaderboard li { margin: 8px 0; }
     .leaderboard .lead-note { margin: 0; margin-top: 6px; }
     .medal { display:inline-block; min-width: 26px; text-align:center; }
 
-    /* ===== Botõezinhos dos filtros ===== */
-    .chip-row { display:flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
-    .chip {
-      display:inline-flex;
-      align-items:center;
-      gap: 8px;
-      padding: 8px 12px;
-      border-radius: 999px;
-      border: 1px solid #e3e3e3;
-      background: #fafafa;
-      color: #333;
-      font-weight: 700;
-      font-size: 13px;
-      line-height: 1;
-    }
-    .chip:hover { filter: brightness(0.98); }
-    .chip.active {
-      border-color: #2b7cff;
-      background: #eef5ff;
-      color: #1456c2;
-      box-shadow: 0 1px 10px rgba(43,124,255,0.12);
-    }
+    .filters { display:flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .filterbtn { display:inline-block; padding: 8px 10px; border:1px solid #ddd; border-radius: 10px; background:#f7f7f7; font-size: 13px; }
+    .filterbtn:hover { background:#f0f0f0; }
+
+    .msg { margin-top: 12px; }
+    .warn { background:#fff7e6; border:1px solid #ffd9a8; padding: 10px; border-radius: 12px; }
+    .ok { background:#ecfff1; border:1px solid #b6f2c4; padding: 10px; border-radius: 12px; }
+
+    .dupwarn { display:none; margin-top: 10px; }
   </style>
 </head>
 <body>
   <h1>Painel</h1>
 
   <p class="muted">
-    <a class="chip" href="{{url_for('home')}}">⬅ Voltar para a ferramenta</a>
+    <a class="filterbtn" href="{{url_for('home')}}">← Voltar para a ferramenta</a>
   </p>
 
   <div class="btn-row">
@@ -566,7 +692,7 @@ ADMIN_HTML = """
 
     {% if role == "reviewer" %}
       <a class="pill" href="{{url_for('admin_review')}}">
-        Fila de revisão: {{pending_count}} pendente(s)
+        📥 Fila de revisão: {{pending_count}} pendente(s)
       </a>
     {% else %}
       <span class="pill">Pendentes: {{pending_count}} (somente o professor revisa)</span>
@@ -578,64 +704,106 @@ ADMIN_HTML = """
     <span class="pill">Total exibido: {{rules|length}}</span>
   </p>
 
-  <div class="box leaderboard">
-    <h2>🏆 Painel de Líderes da Conjugação</h2>
-    <p class="muted lead-note">
-      Destaques da turma: quem mais contribuiu com regras aprovadas para melhorar a ferramenta.
-    </p>
+  {% if ui_msg %}
+    <div class="msg {% if ui_msg_kind=='warn' %}warn{% else %}ok{% endif %}"><b>{{ui_msg}}</b></div>
+  {% endif %}
 
-    {% if leaders and leaders|length > 0 %}
-      <ol>
-        {% for l in leaders %}
-          <li>
-            {% if loop.index == 1 %}
-              <span class="medal">🥇</span>
-            {% elif loop.index == 2 %}
-              <span class="medal">🥈</span>
-            {% elif loop.index == 3 %}
-              <span class="medal">🥉</span>
-            {% else %}
-              <span class="medal">⭐</span>
-            {% endif %}
-            <b>{{l.contributor}}</b> — {{l.total}} contribuição(ões)
+  <div class="boards">
+    <div class="box leaderboard">
+      <h2>🏅 Top da Semana</h2>
+      <p class="muted lead-note">Somente regras aprovadas que entram no ranking (últimos 7 dias).</p>
+      {% if top_week and top_week|length > 0 %}
+        <ol>
+          {% for l in top_week %}
+            <li>
+              {% if loop.index == 1 %}<span class="medal">🥇</span>
+              {% elif loop.index == 2 %}<span class="medal">🥈</span>
+              {% elif loop.index == 3 %}<span class="medal">🥉</span>
+              {% else %}<span class="medal">⭐</span>{% endif %}
+              <b>{{l.contributor}}</b> — {{l.total}}
+            </li>
+          {% endfor %}
+        </ol>
+      {% else %}
+        <p class="muted">Ainda não há pontuações esta semana. Bora inaugurar? 🙂</p>
+      {% endif %}
+    </div>
+
+    <div class="box leaderboard">
+      <h2>🏆 Hall da Fama</h2>
+      <p class="muted lead-note">Ranking geral — quem mais ajudou a construir a base de regras.</p>
+      {% if hall and hall|length > 0 %}
+        <ol>
+          {% for l in hall %}
+            <li>
+              {% if loop.index == 1 %}<span class="medal">👑</span>
+              {% elif loop.index == 2 %}<span class="medal">🥈</span>
+              {% elif loop.index == 3 %}<span class="medal">🥉</span>
+              {% else %}<span class="medal">🏅</span>{% endif %}
+              <b>{{l.contributor}}</b> — {{l.total}}
+            </li>
+          {% endfor %}
+        </ol>
+      {% else %}
+        <p class="muted">Ainda não há contribuições no hall. 🙂</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="box">
+    <h2>📰 Novidades</h2>
+    <p class="muted">Últimas regras aprovadas:</p>
+    {% if news and news|length > 0 %}
+      <ul style="margin: 8px 0 0 18px;">
+        {% for n in news %}
+          <li style="margin: 8px 0;">
+            <code>{{n.wrong}}</code> → <code>{{n.right}}</code>
+            <span class="muted">
+              (por <b>@{{n.contributor or "—"}}</b>)
+            </span>
           </li>
         {% endfor %}
-      </ol>
+      </ul>
     {% else %}
-      <p class="muted">Ainda não há contribuições aprovadas para o ranking. Vamos começar? 🙂</p>
+      <p class="muted">Nenhuma regra aprovada ainda.</p>
     {% endif %}
   </div>
 
   <div class="danger">
     <b>Fluxo:</b> novas regras entram como <b>Pendentes</b> e serão revisadas pelo professor.
+    <br>
+    <span class="muted">Limite: alunos podem enviar até <b>5 regras por dia</b> para evitar spam.</span>
   </div>
 
   <h2>✏️ Contribuir com uma nova regra</h2>
-  <p class="muted">
-    Ajude a melhorar a ferramenta cadastrando erros comuns de conjugação e suas correções.
-  </p>
+  <p class="muted">Cadastre erros comuns e suas correções. Se já existir igual, o sistema avisa.</p>
 
-  <form method="post" action="{{url_for('admin_add')}}">
+  <form id="ruleForm" method="post" action="{{url_for('admin_add')}}">
     <div class="row">
       <div>
         <label><b>Forma errada</b></label>
-        <input name="wrong" placeholder="Ex.: nós vai" required>
+        <input id="wrong" name="wrong" placeholder="Ex.: nós vai" required value="{{prefill_wrong or ''}}">
       </div>
       <div>
         <label><b>Forma correta</b></label>
-        <input name="right" placeholder="Ex.: nós vamos" required>
+        <input id="right" name="right" placeholder="Ex.: nós vamos" required value="{{prefill_right or ''}}">
       </div>
     </div>
 
     <br>
-    <label><b>Username do aluno (para o painel de líderes)</b></label>
-    <input name="contributor" placeholder="Ex.: ana_1info" required>
+    <label><b>Username do aluno (para o ranking)</b></label>
+    <input id="contributor" name="contributor" placeholder="Ex.: ana_1info" required value="{{prefill_contributor or ''}}">
 
     <br><br>
     <label><b>Observação (opcional)</b></label>
-    <textarea name="notes" placeholder="Ex.: comentário rápido (se quiserem)"></textarea>
-    <br><br>
-    <button type="submit">Enviar contribuição</button>
+    <textarea name="notes" placeholder="Ex.: comentário rápido (se quiserem)">{{prefill_notes or ''}}</textarea>
+
+    <div id="dupwarn" class="dupwarn warn">
+      <b>⚠️ Atenção:</b> essa regra já existe na base. Para evitar repetição, o envio será bloqueado.
+    </div>
+
+    <br>
+    <button id="submitBtn" type="submit">Enviar contribuição</button>
   </form>
 
   {% if role == "reviewer" %}
@@ -649,7 +817,7 @@ ADMIN_HTML = """
 
       <div class="btn-row">
         <form method="get" action="{{url_for('admin_export_download')}}">
-          <button type="submit">Exportar regras (baixar arquivo .json)</button>
+          <button type="submit">Exportar regras (.json)</button>
         </form>
 
         <form method="post" action="{{url_for('admin_clear')}}" onsubmit="return confirm('Tem certeza que deseja APAGAR TODAS as regras?');">
@@ -679,15 +847,12 @@ ADMIN_HTML = """
   <h2>Regras</h2>
 
   {% if role == "reviewer" %}
-    <div class="muted">
-      <b>Filtro:</b>
-      <div class="chip-row">
-        <a class="chip {% if view == 'default' %}active{% endif %}" href="{{url_for('admin', view='default')}}">✅ Aprovadas (padrão)</a>
-        <a class="chip {% if view == 'approved_rank' %}active{% endif %}" href="{{url_for('admin', view='approved_rank')}}">🏆 Aprovadas (pontua)</a>
-        <a class="chip {% if view == 'approved_no_rank' %}active{% endif %}" href="{{url_for('admin', view='approved_no_rank')}}">⭐ Aprovadas (não pontua)</a>
-        <a class="chip {% if view == 'all' %}active{% endif %}" href="{{url_for('admin', view='all')}}">📚 Todas</a>
-        <a class="chip {% if view == 'not_approved' %}active{% endif %}" href="{{url_for('admin', view='not_approved')}}">🚫 Não aprovadas</a>
-      </div>
+    <div class="filters">
+      <a class="filterbtn" href="{{url_for('admin', view='default')}}">✅ Aprovadas</a>
+      <a class="filterbtn" href="{{url_for('admin', view='approved_rank')}}">🏆 Pontuam</a>
+      <a class="filterbtn" href="{{url_for('admin', view='approved_no_rank')}}">📌 Não pontuam</a>
+      <a class="filterbtn" href="{{url_for('admin', view='all')}}">📚 Todas</a>
+      <a class="filterbtn" href="{{url_for('admin', view='not_approved')}}">🚫 Não aprovadas</a>
     </div>
   {% endif %}
 
@@ -730,6 +895,42 @@ ADMIN_HTML = """
       {% endif %}
     </tbody>
   </table>
+
+  <script>
+    const wrongEl = document.getElementById("wrong");
+    const rightEl = document.getElementById("right");
+    const warnEl = document.getElementById("dupwarn");
+    const btnEl = document.getElementById("submitBtn");
+
+    async function checkDup() {
+      const w = (wrongEl.value || "").trim();
+      const r = (rightEl.value || "").trim();
+      if (!w || !r) {
+        warnEl.style.display = "none";
+        btnEl.disabled = false;
+        return;
+      }
+      try {
+        const qs = new URLSearchParams({wrong: w, right: r});
+        const resp = await fetch("/api/check-duplicate?" + qs.toString());
+        const data = await resp.json();
+        if (data.exists === true) {
+          warnEl.style.display = "block";
+          btnEl.disabled = true;
+        } else {
+          warnEl.style.display = "none";
+          btnEl.disabled = false;
+        }
+      } catch (e) {
+        // Se falhar, não bloqueia (só server-side impede)
+        warnEl.style.display = "none";
+        btnEl.disabled = false;
+      }
+    }
+
+    wrongEl.addEventListener("input", () => { checkDup(); });
+    rightEl.addEventListener("input", () => { checkDup(); });
+  </script>
 </body>
 </html>
 """
@@ -743,7 +944,8 @@ REVIEW_HTML = """
   <title>Fila de revisão - {{title}}</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 16px; }
-    button { padding: 10px 14px; font-size: 14px; cursor: pointer; }
+    button { padding: 10px 14px; font-size: 14px; cursor: pointer; border-radius:10px; border:1px solid #ddd; background:#f7f7f7; }
+    button:hover { background:#f0f0f0; }
     table { width: 100%; border-collapse: collapse; margin-top: 18px; }
     th, td { border-bottom: 1px solid #eee; padding: 10px; vertical-align: top; text-align: left; }
     .muted { color: #666; }
@@ -751,12 +953,9 @@ REVIEW_HTML = """
     .btns { display:flex; gap: 8px; flex-wrap: wrap; }
     .top { display:flex; gap: 10px; align-items:center; flex-wrap: wrap; }
     a { text-decoration:none; }
-    .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
-    .chip {
-      display:inline-flex; align-items:center; gap:8px;
-      padding: 8px 12px; border-radius:999px;
-      border:1px solid #e3e3e3; background:#fafafa; color:#333; font-weight:700; font-size:13px;
-    }
+    .pill { display:inline-block; padding: 6px 12px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
+    .btnlink { display:inline-block; padding: 8px 10px; border:1px solid #ddd; border-radius: 10px; background:#f7f7f7; font-size: 13px; }
+    .btnlink:hover { background:#f0f0f0; }
   </style>
 </head>
 <body>
@@ -766,7 +965,7 @@ REVIEW_HTML = """
   </div>
 
   <p class="muted">
-    <a class="chip" href="{{url_for('admin')}}">⬅ Voltar para o Painel</a>
+    <a class="btnlink" href="{{url_for('admin')}}">← Voltar para o painel</a>
   </p>
 
   {% if msg %}
@@ -823,6 +1022,18 @@ REVIEW_HTML = """
 
 
 # ----------------------------
+# APIs utilitárias
+# ----------------------------
+@app.route("/api/check-duplicate", methods=["GET"])
+def api_check_duplicate():
+    wrong = (request.args.get("wrong") or "").strip()
+    right = (request.args.get("right") or "").strip()
+    if not wrong or not right:
+        return jsonify({"exists": False})
+    return jsonify({"exists": is_duplicate_rule(wrong, right)})
+
+
+# ----------------------------
 # Rotas (páginas)
 # ----------------------------
 @app.route("/", methods=["GET", "POST"])
@@ -830,9 +1041,20 @@ def home():
     text = ""
     result = None
     changes = []
+    username = ""
+    streak_username = ""
+    streak = 0
+
     if request.method == "POST":
+        username = (request.form.get("username", "") or "").strip()
         text = request.form.get("text", "")
         result, changes = correct_text(text)
+
+        # registra uso do dia (para streak)
+        if username:
+            register_usage_day(username)
+            streak_username = username
+            streak = get_streak(username)
 
     return render_template_string(
         HOME_HTML,
@@ -841,6 +1063,9 @@ def home():
         result=result,
         changes=changes,
         db_path=DB_PATH,
+        username=username,
+        streak_username=streak_username,
+        streak=streak,
     )
 
 
@@ -850,6 +1075,10 @@ def admin():
     role = session.get("role")
     import_msg = request.args.get("msg", "")
 
+    # mensagens de UI
+    ui_msg = request.args.get("ui_msg", "")
+    ui_msg_kind = request.args.get("ui_kind", "ok")  # ok | warn
+
     # Alunos não podem escolher filtros avançados: sempre default
     if role == ROLE_REVIEWER:
         view = request.args.get("view", "default").strip() or "default"
@@ -857,38 +1086,72 @@ def admin():
         view = "default"
 
     rules = get_rules_list(view=view)
-    leaders = get_leaderboard(10)
+
+    hall = get_hall_of_fame(10)
+    top_week = get_top_week(days=7, limit=10)
+    news = get_news_feed(10)
+
     pending_count = get_pending_count()
+
+    # Prefill do formulário caso queira manter em redirects futuros
+    prefill_wrong = request.args.get("w", "")
+    prefill_right = request.args.get("r", "")
+    prefill_contributor = request.args.get("c", "")
+    prefill_notes = request.args.get("n", "")
 
     return render_template_string(
         ADMIN_HTML,
         title=APP_TITLE,
         rules=rules,
-        leaders=leaders,
+        hall=hall,
+        top_week=top_week,
+        news=news,
         pending_count=pending_count,
         db_path=DB_PATH,
         import_msg=import_msg,
         status_label=status_label,
         role=role,
-        view=view,
+        ui_msg=ui_msg,
+        ui_msg_kind=ui_msg_kind,
+        prefill_wrong=prefill_wrong,
+        prefill_right=prefill_right,
+        prefill_contributor=prefill_contributor,
+        prefill_notes=prefill_notes,
     )
 
 
 @app.route("/admin/add", methods=["POST"])
 @admin_required
 def admin_add():
-    wrong = request.form.get("wrong", "").strip()
-    right = request.form.get("right", "").strip()
-    notes = request.form.get("notes", "").strip()
-    contributor = request.form.get("contributor", "").strip()
+    wrong = (request.form.get("wrong", "") or "").strip()
+    right = (request.form.get("right", "") or "").strip()
+    notes = (request.form.get("notes", "") or "").strip()
+    contributor = (request.form.get("contributor", "") or "").strip()
 
-    if wrong and right:
-        add_rule(wrong, right, notes, contributor)
+    # validações básicas
+    if not wrong or not right or not contributor:
+        return redirect(url_for("admin", ui_msg="Preencha errado, correto e username.", ui_kind="warn",
+                                w=wrong, r=right, c=contributor, n=notes))
+
+    # Duplicata: avisa e não adiciona
+    if is_duplicate_rule(wrong, right):
+        return redirect(url_for("admin", ui_msg="Essa regra já existe na base. Envie uma diferente 🙂", ui_kind="warn",
+                                w=wrong, r=right, c=contributor, n=notes))
+
+    # Limite 5/dia (só para alunos)
+    if session.get("role") == ROLE_ADMIN:
+        if count_rules_today(contributor) >= 5:
+            return redirect(url_for("admin",
+                                    ui_msg="Limite diário atingido (5 regras hoje). Amanhã você pode enviar mais 🙂",
+                                    ui_kind="warn",
+                                    w=wrong, r=right, c=contributor, n=notes))
+
+    add_rule(wrong, right, notes, contributor)
 
     # Professor vai para fila, aluno volta para /admin
     if session.get("role") == ROLE_REVIEWER:
         return redirect(url_for("admin_review"))
-    return redirect(url_for("admin"))
+    return redirect(url_for("admin", ui_msg="Contribuição enviada! Agora ela vai para a revisão do professor ✅", ui_kind="ok"))
 
 
 @app.route("/admin/revisao", methods=["GET"])
