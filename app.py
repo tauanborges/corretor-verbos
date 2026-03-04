@@ -81,6 +81,21 @@ LOGIN_HTML = """
     .muted { color:#666; }
     .err { color:#b00020; margin-top: 10px; }
     a { text-decoration: none; }
+
+    /* Botãozinho (link com cara de botão) */
+    .btn-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid #d8e6ff;
+      background: #eef5ff;
+      color: #1456c2;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .btn-link:hover { filter: brightness(0.98); }
   </style>
 </head>
 <body>
@@ -101,7 +116,9 @@ LOGIN_HTML = """
     {% endif %}
   </div>
 
-  <p class="muted"><a href="{{url_for('home')}}">← Voltar para a ferramenta</a></p>
+  <p class="muted" style="margin-top:14px;">
+    <a class="btn-link" href="{{url_for('home')}}">⬅ Voltar para a ferramenta</a>
+  </p>
 </body>
 </html>
 """
@@ -385,15 +402,24 @@ HOME_HTML = """
     .box { border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin-top: 16px; }
     .muted { color: #666; }
     .changes li { margin: 6px 0; }
-
     a { text-decoration: none; }
-
     .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
 
     .header { margin: 14px 0 18px; }
     .logos { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
     .logos img { max-height: 60px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
-    .credit { margin: 0; color: #444; background: #f7f7f7; border: 1px solid #e6e6e6; padding: 10px 12px; border-radius: 10px; line-height: 1.4; }
+
+    /* Frase um pouquinho maior */
+    .credit {
+      margin: 0;
+      color: #444;
+      background: #f7f7f7;
+      border: 1px solid #e6e6e6;
+      padding: 12px 14px;
+      border-radius: 10px;
+      line-height: 1.45;
+      font-size: 16px; /* <-- aumentado (antes estava no padrão) */
+    }
 
     /* Botãozinho (link com cara de botão) */
     .btn-link {
@@ -844,7 +870,7 @@ def admin():
         import_msg=import_msg,
         status_label=status_label,
         role=role,
-        view=view,  # <-- necessário para destacar o filtro ativo
+        view=view,
     )
 
 
