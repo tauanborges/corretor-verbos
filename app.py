@@ -182,17 +182,6 @@ def db_init():
         except sqlite3.OperationalError:
             pass
 
-    # Tabela para registrar uso diário (streak)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS usage_days (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL,
-            day TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE(username, day)
-        );
-    """)
-
     # Para regras antigas sem status: não pontuam por padrão (evita inflar ranking)
     cur.execute("""
         UPDATE rules
@@ -414,60 +403,6 @@ def get_news_feed(limit: int = 10):
 
 
 # ----------------------------
-# Streak (uso por 3 dias)
-# ----------------------------
-def register_usage_day(username: str):
-    """Registra que o aluno usou a ferramenta hoje (uma vez por dia)."""
-    username = (username or "").strip()
-    if not username:
-        return
-
-    today = date.today().isoformat()
-    conn = db_connect()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "INSERT OR IGNORE INTO usage_days (username, day, created_at) VALUES (?, ?, ?);",
-            (username, today, datetime.now().isoformat(timespec="seconds")),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def get_streak(username: str) -> int:
-    """Streak de dias seguidos (conta a partir de hoje, voltando)."""
-    username = (username or "").strip()
-    if not username:
-        return 0
-
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT day FROM usage_days
-        WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
-        ORDER BY day DESC
-        LIMIT 30;
-        """,
-        (username,),
-    )
-    days = [row["day"] for row in cur.fetchall()]
-    conn.close()
-
-    if not days:
-        return 0
-
-    days_set = set(days)
-    streak = 0
-    d = date.today()
-    while d.isoformat() in days_set:
-        streak += 1
-        d = d - timedelta(days=1)
-    return streak
-
-
-# ----------------------------
 # Correção: múltiplos erros
 # ----------------------------
 def apply_case_like(source_text: str, replacement: str) -> str:
@@ -532,7 +467,6 @@ HOME_HTML = """
   <style>
     body { font-family: Arial, sans-serif; max-width: 900px; margin: 30px auto; padding: 0 16px; }
     textarea { width: 100%; min-height: 120px; padding: 10px; font-size: 16px; }
-    input { width: 100%; padding: 10px; font-size: 16px; }
     button { padding: 10px 14px; font-size: 16px; cursor: pointer; border-radius: 10px; border:1px solid #ddd; background:#f7f7f7; }
     button:hover { background:#f0f0f0; }
     .box { border: 1px solid #e6e6e6; border-radius: 14px; padding: 16px; margin-top: 16px; background: #fff; box-shadow: 0 1px 10px rgba(0,0,0,0.04); }
@@ -547,8 +481,6 @@ HOME_HTML = """
     .logos { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
     .logos img { max-height: 60px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
     .credit { margin: 0; color: #444; background: #f7f7f7; border: 1px solid #e6e6e6; padding: 14px 14px; border-radius: 12px; line-height: 1.5; font-size: 16px; }
-    .row2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    @media (max-width: 700px) { .row2 { grid-template-columns: 1fr; } }
     h2 { margin-top: 26px; border-left: 6px solid #2b7cff; padding-left: 12px; }
   </style>
 </head>
@@ -580,32 +512,10 @@ HOME_HTML = """
     <span class="pill">Banco: {{db_path}}</span>
   </p>
 
-  {% if streak_username %}
-    <div class="box">
-      <h2>🔥 Sequência do aluno</h2>
-      <p style="margin:0;">
-        <b>@{{streak_username}}</b> — sequência atual: <b>{{streak}}</b> dia(s).
-        {% if streak >= 3 %}
-          <span class="pill">✅ Bônus liberado (3 dias seguidos)</span>
-        {% else %}
-          <span class="pill">Meta: 3 dias seguidos</span>
-        {% endif %}
-      </p>
-    </div>
-  {% endif %}
-
   <form method="post" action="{{url_for('home')}}">
-    <div class="row2">
-      <div>
-        <label><b>Username (opcional, para contar a sequência)</b></label><br>
-        <input name="username" placeholder="Ex.: ana_1info" value="{{username or ''}}">
-      </div>
-      <div>
-        <label><b>Frase do aluno</b></label><br>
-        <textarea name="text" placeholder="Ex.: nós vai amanhã e eles foi ontem...">{{text or ""}}</textarea>
-      </div>
-    </div>
-    <br>
+    <label><b>Frase do aluno</b></label><br>
+    <textarea name="text" placeholder="Ex.: nós vai amanhã e eles foi ontem...">{{text or ""}}</textarea>
+    <br><br>
     <button type="submit">✅ Corrigir</button>
   </form>
 
@@ -1041,20 +951,10 @@ def home():
     text = ""
     result = None
     changes = []
-    username = ""
-    streak_username = ""
-    streak = 0
 
     if request.method == "POST":
-        username = (request.form.get("username", "") or "").strip()
         text = request.form.get("text", "")
         result, changes = correct_text(text)
-
-        # registra uso do dia (para streak)
-        if username:
-            register_usage_day(username)
-            streak_username = username
-            streak = get_streak(username)
 
     return render_template_string(
         HOME_HTML,
@@ -1063,9 +963,6 @@ def home():
         result=result,
         changes=changes,
         db_path=DB_PATH,
-        username=username,
-        streak_username=streak_username,
-        streak=streak,
     )
 
 
