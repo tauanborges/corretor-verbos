@@ -440,6 +440,8 @@ def correct_text(text: str):
     for r in rules:
         wrong = r["wrong"]
         right = r["right"]
+        contributor = (r["contributor"] or "").strip()
+
         if not wrong:
             continue
 
@@ -451,7 +453,11 @@ def correct_text(text: str):
         def _repl(match):
             original = match.group(0)
             repl = apply_case_like(original, right)
-            changes.append({"de": original, "para": repl})
+            changes.append({
+                "de": original,
+                "para": repl,
+                "por": contributor
+            })
             return repl
 
         corrected, _ = pattern.subn(_repl, corrected)
@@ -500,7 +506,7 @@ HOME_HTML = """
 
     .box { border: 1px solid #e6e6e6; border-radius: 14px; padding: 16px; margin-top: 16px; background: #fff; box-shadow: 0 1px 10px rgba(0,0,0,0.04); }
     .muted { color: #666; }
-    .changes li { margin: 6px 0; }
+    .changes li { margin: 8px 0; }
     a { text-decoration: none; }
     .pill { display:inline-block; padding: 6px 12px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
 
@@ -518,7 +524,57 @@ HOME_HTML = """
     .logos { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
     .logos img { max-height: 60px; max-width: 220px; width: auto; height: auto; object-fit: contain; }
     .credit { margin: 0; color: #444; background: #f7f7f7; border: 1px solid #e6e6e6; padding: 14px 14px; border-radius: 12px; line-height: 1.5; font-size: 16px; }
+
     h2 { margin-top: 26px; border-left: 6px solid #2b7cff; padding-left: 12px; }
+
+    .home-panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+      margin-top: 14px;
+      margin-bottom: 14px;
+    }
+
+    .mini-box {
+      border: 1px solid #ececec;
+      border-radius: 12px;
+      padding: 12px;
+      background: #fbfbfb;
+    }
+
+    .mini-box h3 {
+      margin: 0 0 8px 0;
+      font-size: 14px;
+      color: #333;
+    }
+
+    .mini-box ol, .mini-box ul {
+      margin: 0 0 0 18px;
+      padding: 0;
+      font-size: 13px;
+    }
+
+    .mini-box li {
+      margin: 6px 0;
+    }
+
+    .mini-muted {
+      color: #777;
+      font-size: 12px;
+      margin: 0;
+    }
+
+    .contrib {
+      color: #777;
+      font-size: 12px;
+      margin-left: 6px;
+    }
+
+    @media (max-width: 820px) {
+      .home-panels {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
@@ -549,6 +605,50 @@ HOME_HTML = """
     <span class="pill">Banco: {{db_path}}</span>
   </p>
 
+  <div class="home-panels">
+    <div class="mini-box">
+      <h3>🏅 Top da semana</h3>
+      {% if top_week and top_week|length > 0 %}
+        <ol>
+          {% for l in top_week %}
+            <li><b>{{l.contributor}}</b> — {{l.total}}</li>
+          {% endfor %}
+        </ol>
+      {% else %}
+        <p class="mini-muted">Sem pontuações nesta semana.</p>
+      {% endif %}
+    </div>
+
+    <div class="mini-box">
+      <h3>🏆 Hall da fama</h3>
+      {% if hall and hall|length > 0 %}
+        <ol>
+          {% for l in hall %}
+            <li><b>{{l.contributor}}</b> — {{l.total}}</li>
+          {% endfor %}
+        </ol>
+      {% else %}
+        <p class="mini-muted">Ainda sem contribuições.</p>
+      {% endif %}
+    </div>
+
+    <div class="mini-box">
+      <h3>📰 Últimas aprovadas</h3>
+      {% if news and news|length > 0 %}
+        <ul>
+          {% for n in news %}
+            <li>
+              <code>{{n.wrong}}</code> → <code>{{n.right}}</code>
+              <span class="contrib">por @{{n.contributor or "—" }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="mini-muted">Nenhuma regra aprovada ainda.</p>
+      {% endif %}
+    </div>
+  </div>
+
   <form method="post" action="{{url_for('home')}}">
     <label><b>Frase do aluno</b></label><br>
     <textarea name="text" placeholder="Ex.: nós vai amanhã e eles foi ontem...">{{text or ""}}</textarea>
@@ -566,7 +666,12 @@ HOME_HTML = """
       {% if changes %}
         <ul class="changes">
           {% for c in changes %}
-            <li><code>{{c.de}}</code> → <code>{{c.para}}</code></li>
+            <li>
+              <code>{{c.de}}</code> → <code>{{c.para}}</code>
+              {% if c.por %}
+                <span class="contrib">por @{{c.por}}</span>
+              {% endif %}
+            </li>
           {% endfor %}
         </ul>
       {% else %}
@@ -731,7 +836,7 @@ ADMIN_HTML = """
       </ul>
     {% else %}
       <p class="muted">Nenhuma regra aprovada ainda.</p>
-    {% endif %}
+      {% endif %}
   </div>
 
   <div class="danger">
@@ -1036,6 +1141,9 @@ def home():
         result=result,
         changes=changes,
         db_path=DB_PATH,
+        top_week=get_top_week(days=7, limit=3),
+        hall=get_hall_of_fame(limit=3),
+        news=get_news_feed(limit=3),
     )
 
 
