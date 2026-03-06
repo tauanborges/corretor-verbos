@@ -76,13 +76,32 @@ LOGIN_HTML = """
   <style>
     body { font-family: Arial, sans-serif; max-width: 520px; margin: 60px auto; padding: 0 16px; }
     input { width: 100%; padding: 10px; font-size: 16px; }
-    button { padding: 10px 14px; font-size: 16px; cursor: pointer; }
+
+    button {
+      padding: 10px 14px;
+      font-size: 16px;
+      cursor: pointer;
+      border-radius: 10px;
+      border: 1px solid #6b6b6b;
+      background: #6b6b6b;
+      color: #ffffff;
+    }
+    button:hover { background: #5a5a5a; }
+
     .box { border: 1px solid #ddd; border-radius: 10px; padding: 16px; }
     .muted { color:#666; }
     .err { color:#b00020; margin-top: 10px; }
     a { text-decoration: none; }
-    .btn { display:inline-block; padding: 10px 14px; border:1px solid #ddd; border-radius: 10px; background:#f7f7f7; }
-    .btn:hover { background:#f0f0f0; }
+
+    .btn {
+      display:inline-block;
+      padding: 10px 14px;
+      border:1px solid #6b6b6b;
+      border-radius: 10px;
+      background:#6b6b6b;
+      color:#ffffff;
+    }
+    .btn:hover { background:#5a5a5a; }
   </style>
 </head>
 <body>
@@ -271,7 +290,7 @@ def count_rules_today(contributor: str) -> int:
     """Quantas regras esse aluno enviou hoje (pelo created_at)."""
     if not contributor:
         return 0
-    today = date.today().isoformat()  # YYYY-MM-DD
+    today = date.today().isoformat()
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(
@@ -414,7 +433,7 @@ def apply_case_like(source_text: str, replacement: str) -> str:
 
 
 def correct_text(text: str):
-    rules = get_rules_list(view="default")  # só aprovadas entram na correção por padrão
+    rules = get_rules_list(view="default")
     corrected = text
     changes = []
 
@@ -467,15 +486,33 @@ HOME_HTML = """
   <style>
     body { font-family: Arial, sans-serif; max-width: 900px; margin: 30px auto; padding: 0 16px; }
     textarea { width: 100%; min-height: 120px; padding: 10px; font-size: 16px; }
-    button { padding: 10px 14px; font-size: 16px; cursor: pointer; border-radius: 10px; border:1px solid #ddd; background:#f7f7f7; }
-    button:hover { background:#f0f0f0; }
+
+    button {
+      padding: 10px 14px;
+      font-size: 16px;
+      cursor: pointer;
+      border-radius: 10px;
+      border:1px solid #6b6b6b;
+      background:#6b6b6b;
+      color:#ffffff;
+    }
+    button:hover { background:#5a5a5a; }
+
     .box { border: 1px solid #e6e6e6; border-radius: 14px; padding: 16px; margin-top: 16px; background: #fff; box-shadow: 0 1px 10px rgba(0,0,0,0.04); }
     .muted { color: #666; }
     .changes li { margin: 6px 0; }
     a { text-decoration: none; }
     .pill { display:inline-block; padding: 6px 12px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
-    .btnlink { display:inline-block; padding: 10px 14px; border:1px solid #ddd; border-radius: 10px; background:#f7f7f7; }
-    .btnlink:hover { background:#f0f0f0; }
+
+    .btnlink {
+      display:inline-block;
+      padding: 10px 14px;
+      border:1px solid #6b6b6b;
+      border-radius: 10px;
+      background:#6b6b6b;
+      color:#ffffff;
+    }
+    .btnlink:hover { background:#5a5a5a; }
 
     .header { margin: 14px 0 18px; }
     .logos { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
@@ -551,8 +588,18 @@ ADMIN_HTML = """
   <style>
     body { font-family: Arial, sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 16px; }
     input, textarea { width: 100%; padding: 10px; font-size: 15px; }
-    button { padding: 10px 14px; font-size: 15px; cursor: pointer; border-radius: 10px; border:1px solid #ddd; background:#f7f7f7; }
-    button:hover { background:#f0f0f0; }
+
+    button {
+      padding: 10px 14px;
+      font-size: 15px;
+      cursor: pointer;
+      border-radius: 10px;
+      border:1px solid #6b6b6b;
+      background:#6b6b6b;
+      color:#ffffff;
+    }
+    button:hover { background:#5a5a5a; }
+
     table { width: 100%; border-collapse: collapse; margin-top: 18px; }
     th, td { border-bottom: 1px solid #eee; padding: 10px; vertical-align: top; text-align: left; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -578,8 +625,16 @@ ADMIN_HTML = """
     .medal { display:inline-block; min-width: 26px; text-align:center; }
 
     .filters { display:flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    .filterbtn { display:inline-block; padding: 8px 10px; border:1px solid #ddd; border-radius: 10px; background:#f7f7f7; font-size: 13px; }
-    .filterbtn:hover { background:#f0f0f0; }
+    .filterbtn {
+      display:inline-block;
+      padding: 8px 10px;
+      border:1px solid #6b6b6b;
+      border-radius: 10px;
+      background:#6b6b6b;
+      color:#ffffff;
+      font-size: 13px;
+    }
+    .filterbtn:hover { background:#5a5a5a; }
 
     .msg { margin-top: 12px; }
     .warn { background:#fff7e6; border:1px solid #ffd9a8; padding: 10px; border-radius: 12px; }
@@ -832,7 +887,6 @@ ADMIN_HTML = """
           btnEl.disabled = false;
         }
       } catch (e) {
-        // Se falhar, não bloqueia (só server-side impede)
         warnEl.style.display = "none";
         btnEl.disabled = false;
       }
@@ -854,8 +908,18 @@ REVIEW_HTML = """
   <title>Fila de revisão - {{title}}</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 16px; }
-    button { padding: 10px 14px; font-size: 14px; cursor: pointer; border-radius:10px; border:1px solid #ddd; background:#f7f7f7; }
-    button:hover { background:#f0f0f0; }
+
+    button {
+      padding: 10px 14px;
+      font-size: 14px;
+      cursor: pointer;
+      border-radius:10px;
+      border:1px solid #6b6b6b;
+      background:#6b6b6b;
+      color:#ffffff;
+    }
+    button:hover { background:#5a5a5a; }
+
     table { width: 100%; border-collapse: collapse; margin-top: 18px; }
     th, td { border-bottom: 1px solid #eee; padding: 10px; vertical-align: top; text-align: left; }
     .muted { color: #666; }
@@ -864,8 +928,17 @@ REVIEW_HTML = """
     .top { display:flex; gap: 10px; align-items:center; flex-wrap: wrap; }
     a { text-decoration:none; }
     .pill { display:inline-block; padding: 6px 12px; border-radius: 999px; background:#f4f4f4; color:#444; font-size: 12px; }
-    .btnlink { display:inline-block; padding: 8px 10px; border:1px solid #ddd; border-radius: 10px; background:#f7f7f7; font-size: 13px; }
-    .btnlink:hover { background:#f0f0f0; }
+
+    .btnlink {
+      display:inline-block;
+      padding: 8px 10px;
+      border:1px solid #6b6b6b;
+      border-radius: 10px;
+      background:#6b6b6b;
+      color:#ffffff;
+      font-size: 13px;
+    }
+    .btnlink:hover { background:#5a5a5a; }
   </style>
 </head>
 <body>
@@ -974,7 +1047,7 @@ def admin():
 
     # mensagens de UI
     ui_msg = request.args.get("ui_msg", "")
-    ui_msg_kind = request.args.get("ui_kind", "ok")  # ok | warn
+    ui_msg_kind = request.args.get("ui_kind", "ok")
 
     # Alunos não podem escolher filtros avançados: sempre default
     if role == ROLE_REVIEWER:
@@ -990,7 +1063,6 @@ def admin():
 
     pending_count = get_pending_count()
 
-    # Prefill do formulário caso queira manter em redirects futuros
     prefill_wrong = request.args.get("w", "")
     prefill_right = request.args.get("r", "")
     prefill_contributor = request.args.get("c", "")
@@ -1025,17 +1097,14 @@ def admin_add():
     notes = (request.form.get("notes", "") or "").strip()
     contributor = (request.form.get("contributor", "") or "").strip()
 
-    # validações básicas
     if not wrong or not right or not contributor:
         return redirect(url_for("admin", ui_msg="Preencha errado, correto e username.", ui_kind="warn",
                                 w=wrong, r=right, c=contributor, n=notes))
 
-    # Duplicata: avisa e não adiciona
     if is_duplicate_rule(wrong, right):
         return redirect(url_for("admin", ui_msg="Essa regra já existe na base. Envie uma diferente 🙂", ui_kind="warn",
                                 w=wrong, r=right, c=contributor, n=notes))
 
-    # Limite 5/dia (só para alunos)
     if session.get("role") == ROLE_ADMIN:
         if count_rules_today(contributor) >= 5:
             return redirect(url_for("admin",
@@ -1045,7 +1114,6 @@ def admin_add():
 
     add_rule(wrong, right, notes, contributor)
 
-    # Professor vai para fila, aluno volta para /admin
     if session.get("role") == ROLE_REVIEWER:
         return redirect(url_for("admin_review"))
     return redirect(url_for("admin", ui_msg="Contribuição enviada! Agora ela vai para a revisão do professor ✅", ui_kind="ok"))
